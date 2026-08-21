@@ -1,11 +1,19 @@
 import mongoose from 'mongoose';
 import DailyReport from '../models/DailyReport.js';
+import * as historicalTransactionService from './historicalTransactionService.js';
 
 /**
  * كل دالة هنا تعيد إنتاج نفس حسابات reportUtils.js بالفرونت بالضبط
  * (computeCustomerStats / computeQuarryStats / computeTruckStats / computeWorkerStats)،
  * لكن عبر MongoDB Aggregation بدل تحميل كل التقارير وحسابها في المتصفح.
  * القرار موثّق في BACKEND_BLUEPRINT.md قسم 5.
+ *
+ * تحديث: تم دمج المعاملات القديمة (HistoricalTransaction) في كشف حساب العميل والقلاب
+ * ضمن نفس مصدر البيانات الحقيقي (وليس نسخة منفصلة للعرض فقط)، مع رصيد متحرك (running
+ * balance) محسوب فعليًا من كل العمليات (القديمة من الدفاتر + الجديدة من النظام) مرتبة بالتاريخ.
+ * الكسارة (Quarry) ليس لها حاليًا مفهوم "مستحق مالي" في business logic الحالي (raw.weight فقط،
+ * بدون paid/remaining) — لذلك لا نخترع رصيدًا ماليًا مدمجًا لها؛ المعاملات القديمة تُعرض
+ * كسجل مالي حقيقي مستقل بجانب سجل التوريدات (وزن فقط)، دون خلط الاثنين.
  */
 
 function dateMatch(from, to) {
@@ -18,7 +26,30 @@ function dateMatch(from, to) {
   return match;
 }
 
-/** كشف حساب عميل — مطابق computeCustomerStats */
+/** يبني كشف حساب موحّد مرتب بالتاريخ مع رصيد متحرك من مصفوفتين: عمليات من التقارير + معاملات قديمة */
+function buildLedger(reportEntries, historicalEntries) {
+  const ledger = [
+    ...reportEntries.map((e) => ({ ...e, source: 'report' })),
+    ...historicalEntries.map((h) => ({
+      source: 'historical',
+      date: h.date,
+      type: h.type || 'معاملة قديمة',
+      description: h.description || '',
+      delta: h.direction === 'عليه' ? Number(h.amount) || 0 : -(Number(h.amount) || 0),
+      amount: h.amount,
+      direction: h.direction,
+      id: h.id,
+    })),
+  ].sort((a, b) => (a.date < b.date ? -1 : a.date > b.date ? 1 : 0));
+
+  let balance = 0;
+  return ledger.map((entry) => {
+    balance += entry.delta;
+    return { ...entry, balance };
+  });
+}
+
+/** كشف حساب عميل — مطابق computeCustomerStats + معاملات قديمة (delta موجب = العميل مدين أكثر للمصنع) */
 export async function getCustomerStatement(customerId, { from, to } = {}) {
   const id = new mongoose.Types.ObjectId(customerId);
   const pipeline = [
@@ -51,7 +82,26 @@ export async function getCustomerStatement(customerId, { from, to } = {}) {
   const creditPaid = sales.filter((l) => l.payment === 'آجل').reduce((s, l) => s + (Number(l.paid) || 0), 0);
   const totalRemaining = sales.filter((l) => l.payment === 'آجل').reduce((s, l) => s + (Number(l.remaining) || 0), 0);
 
-  return { sales, totalSales, totalPaid: cashSales + creditPaid, totalRemaining };
+  const { items: historical, totalFor, totalAgainst } = await historicalTransactionService.getEntityNet('customer', customerId);
+
+  const ledgerFromSales = sales.map((s) => ({
+    date: s.date,
+    type: 'بيع',
+    description: [s.fineness, s.packaging].filter(Boolean).join(' — '),
+    // delta موجب = العميل أصبح مدينًا أكثر (المتبقي فقط، لأن المدفوع نقدًا لا يترك أثرًا في الرصيد)
+    delta: Number(s.remaining) || 0,
+    reportId: s.reportId,
+  }));
+  const ledger = buildLedger(ledgerFromSales, historical);
+
+  return {
+    sales,
+    totalSales,
+    totalPaid: cashSales + creditPaid,
+    totalRemaining: totalRemaining + totalAgainst - totalFor,
+    historical,
+    ledger,
+  };
 }
 
 /** كشف حساب كسارة — مطابق computeQuarryStats (raw ليست مصفوفة، فلا حاجة لـ$unwind) */
@@ -71,10 +121,16 @@ export async function getQuarryStatement(quarryId, { from, to } = {}) {
   }));
 
   const totalWeight = deliveries.reduce((s, d) => s + (Number(d.weight) || 0), 0);
-  return { deliveries, totalWeight };
+
+  // لا يوجد مفهوم "مستحق مالي" حاليًا للكسارة في business logic الموجود (وزن فقط) —
+  // لذلك المعاملات القديمة هنا سجل مالي حقيقي مستقل (رصيده الخاص)، وليس مدمجًا مع الوزن.
+  const { items: historical, totalFor, totalAgainst } = await historicalTransactionService.getEntityNet('quarry', quarryId);
+  const historicalLedger = buildLedger([], historical);
+
+  return { deliveries, totalWeight, historical, historicalLedger, historicalNetBalance: totalAgainst - totalFor };
 }
 
-/** كشف حساب قلاب — مطابق computeTruckStats */
+/** كشف حساب قلاب — مطابق computeTruckStats + معاملات قديمة (delta موجب = المصنع مدين للقلاب أكثر) */
 export async function getTruckStatement(truckId, { from, to } = {}) {
   const id = new mongoose.Types.ObjectId(truckId);
   const pipeline = [
@@ -105,7 +161,42 @@ export async function getTruckStatement(truckId, { from, to } = {}) {
   const totalPaid = trips.reduce((s, t) => s + (Number(t.paid) || 0), 0);
   const totalRemaining = trips.reduce((s, t) => s + (Number(t.remaining) || 0), 0);
 
-  return { trips, totalWeight, totalDue, totalPaid, totalRemaining };
+  // هنا العكس: الاتجاه 'له' معناه المصنع مدين للقلاب أكثر (delta موجب)، 'عليه' يقلّل المستحق له.
+  const { items: historical, totalFor, totalAgainst } = await historicalTransactionService.getEntityNet('truck', truckId);
+  const ledgerFromTrips = trips.map((t) => ({
+    date: t.date,
+    type: 'رحلة',
+    description: [t.material, t.quarry].filter(Boolean).join(' — '),
+    delta: Number(t.remaining) || 0,
+    reportId: t.reportId,
+  }));
+  // نعكس إشارة delta للمعاملات القديمة هنا لأن buildLedger تفترض دائمًا "عليه = +"، بينما
+  // بالنسبة للقلاب "له" هي التي تزيد المستحق — لذلك نبني الـledger يدويًا بنفس الترتيب والرصيد المتحرك.
+  const ledger = [
+    ...ledgerFromTrips.map((e) => ({ ...e, source: 'report' })),
+    ...historical.map((h) => ({
+      source: 'historical',
+      date: h.date,
+      type: h.type || 'معاملة قديمة',
+      description: h.description || '',
+      delta: h.direction === 'له' ? Number(h.amount) || 0 : -(Number(h.amount) || 0),
+      amount: h.amount,
+      direction: h.direction,
+      id: h.id,
+    })),
+  ].sort((a, b) => (a.date < b.date ? -1 : a.date > b.date ? 1 : 0));
+  let balance = 0;
+  const fullLedger = ledger.map((entry) => { balance += entry.delta; return { ...entry, balance }; });
+
+  return {
+    trips,
+    totalWeight,
+    totalDue,
+    totalPaid,
+    totalRemaining: totalRemaining + totalFor - totalAgainst,
+    historical,
+    ledger: fullLedger,
+  };
 }
 
 /** كشف حساب عامل — مطابق computeWorkerStats (يستخدم المصفوفة المجمّعة "workers" وليس shiftTeams، لأن هذا ما يقرأه الفرونت فعليًا) */
