@@ -8,7 +8,7 @@ import { withIdTransform } from '../utils/mongooseIdPlugin.js';
  */
 const settingsSchema = new mongoose.Schema(
   {
-    factoryName: { type: String, required: true, trim: true, default: 'مصنع النيل لكربونات الكالسيوم' },
+    factoryName: { type: String, required: true, trim: true, default: 'مصنع شارلي لكربونات الكالسيوم' },
     address: { type: String, trim: true, default: 'المنيا — مصر' },
     phone: { type: String, trim: true, default: '01012345678' },
     email: { type: String, trim: true, default: '' },
