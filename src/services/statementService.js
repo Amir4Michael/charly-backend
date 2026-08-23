@@ -26,20 +26,32 @@ function dateMatch(from, to) {
   return match;
 }
 
-/** يبني كشف حساب موحّد مرتب بالتاريخ مع رصيد متحرك من مصفوفتين: عمليات من التقارير + معاملات قديمة */
+/** يبني كشف حساب موحّد مرتب بالتاريخ مع رصيد متحرك من مصفوفتين: عمليات من التقارير + معاملات قديمة.
+ * بعد التبسيط: الاتجاه ثابت حسب نوع الكيان (راجع historicalTransactionService)، فكل عملية
+ * تاريخية تُحسب بمقدار (amount - paidTotal) بنفس إشارة delta الخاصة بعمليات التقارير — بدون
+ * أي فرع على direction بعد الآن.
+ */
 function buildLedger(reportEntries, historicalEntries) {
   const ledger = [
     ...reportEntries.map((e) => ({ ...e, source: 'report' })),
-    ...historicalEntries.map((h) => ({
-      source: 'historical',
-      date: h.date,
-      type: h.type || 'معاملة قديمة',
-      description: h.description || '',
-      delta: h.direction === 'عليه' ? Number(h.amount) || 0 : -(Number(h.amount) || 0),
-      amount: h.amount,
-      direction: h.direction,
-      id: h.id,
-    })),
+    ...historicalEntries.map((h) => {
+      const paidTotal = (h.payments || []).reduce((s, p) => s + (Number(p.amount) || 0), 0);
+      return {
+        source: 'historical',
+        date: h.date,
+        type: h.type || 'عملية',
+        description: h.description || '',
+        delta: (Number(h.amount) || 0) - paidTotal,
+        amount: h.amount,
+        paidTotal,
+        quantity: h.quantity,
+        unit: h.unit,
+        unitPrice: h.unitPrice,
+        dueDate: h.dueDate,
+        payments: h.payments,
+        id: h.id,
+      };
+    }),
   ].sort((a, b) => (a.date < b.date ? -1 : a.date > b.date ? 1 : 0));
 
   let balance = 0;
@@ -82,7 +94,7 @@ export async function getCustomerStatement(customerId, { from, to } = {}) {
   const creditPaid = sales.filter((l) => l.payment === 'آجل').reduce((s, l) => s + (Number(l.paid) || 0), 0);
   const totalRemaining = sales.filter((l) => l.payment === 'آجل').reduce((s, l) => s + (Number(l.remaining) || 0), 0);
 
-  const { items: historical, totalFor, totalAgainst } = await historicalTransactionService.getEntityNet('customer', customerId);
+  const { items: historical, grossTotal, paidTotal } = await historicalTransactionService.getEntityNet('customer', customerId);
 
   const ledgerFromSales = sales.map((s) => ({
     date: s.date,
@@ -94,11 +106,18 @@ export async function getCustomerStatement(customerId, { from, to } = {}) {
   }));
   const ledger = buildLedger(ledgerFromSales, historical);
 
+  // القاعدة الأساسية (قسم 13): إجمالي مبيعات العميل = مجموع عمليات البيع الخاصة به،
+  // وهذا يشمل كل عمليات "إضافة عملية قديمة" (grossTotal) — فهي أصلًا عمليات بيع حسب
+  // تعريف النموذج نفسه، وليست مجرد رقم للرصيد فقط. الدفعات المضافة عليها (paidTotal) تُحسب
+  // كدفعات، حتى تبقى المعادلة: المتبقي = المبيعات - الدفعات.
+  const totalSalesWithHistorical = totalSales + grossTotal;
+  const totalPaidWithHistorical = cashSales + creditPaid + paidTotal;
+
   return {
     sales,
-    totalSales,
-    totalPaid: cashSales + creditPaid,
-    totalRemaining: totalRemaining + totalAgainst - totalFor,
+    totalSales: totalSalesWithHistorical,
+    totalPaid: totalPaidWithHistorical,
+    totalRemaining: totalSalesWithHistorical - totalPaidWithHistorical,
     historical,
     ledger,
   };
@@ -124,10 +143,18 @@ export async function getQuarryStatement(quarryId, { from, to } = {}) {
 
   // لا يوجد مفهوم "مستحق مالي" حاليًا للكسارة في business logic الموجود (وزن فقط) —
   // لذلك المعاملات القديمة هنا سجل مالي حقيقي مستقل (رصيده الخاص)، وليس مدمجًا مع الوزن.
-  const { items: historical, totalFor, totalAgainst } = await historicalTransactionService.getEntityNet('quarry', quarryId);
+  const { items: historical, grossTotal, paidTotal } = await historicalTransactionService.getEntityNet('quarry', quarryId);
   const historicalLedger = buildLedger([], historical);
 
-  return { deliveries, totalWeight, historical, historicalLedger, historicalNetBalance: totalAgainst - totalFor };
+  return {
+    deliveries,
+    totalWeight,
+    historical,
+    historicalLedger,
+    historicalGrossTotal: grossTotal,
+    historicalPaidTotal: paidTotal,
+    historicalNetBalance: grossTotal - paidTotal,
+  };
 }
 
 /** كشف حساب قلاب — مطابق computeTruckStats + معاملات قديمة (delta موجب = المصنع مدين للقلاب أكثر) */
@@ -161,8 +188,10 @@ export async function getTruckStatement(truckId, { from, to } = {}) {
   const totalPaid = trips.reduce((s, t) => s + (Number(t.paid) || 0), 0);
   const totalRemaining = trips.reduce((s, t) => s + (Number(t.remaining) || 0), 0);
 
-  // هنا العكس: الاتجاه 'له' معناه المصنع مدين للقلاب أكثر (delta موجب)، 'عليه' يقلّل المستحق له.
-  const { items: historical, totalFor, totalAgainst } = await historicalTransactionService.getEntityNet('truck', truckId);
+  // 'له' كانت تزيد المستحق للقلاب — الآن كل عملية للقلاب دائمًا بهذا الاتجاه (راجع الموديل)،
+  // فلم يعد هناك حاجة لفرع على direction: delta لكل عملية = amount - paidTotal مباشرة (نفس
+  // الدالة العامة buildLedger المستخدمة لكل الكيانات الأخرى).
+  const { items: historical, grossTotal, paidTotal } = await historicalTransactionService.getEntityNet('truck', truckId);
   const ledgerFromTrips = trips.map((t) => ({
     date: t.date,
     type: 'رحلة',
@@ -170,30 +199,14 @@ export async function getTruckStatement(truckId, { from, to } = {}) {
     delta: Number(t.remaining) || 0,
     reportId: t.reportId,
   }));
-  // نعكس إشارة delta للمعاملات القديمة هنا لأن buildLedger تفترض دائمًا "عليه = +"، بينما
-  // بالنسبة للقلاب "له" هي التي تزيد المستحق — لذلك نبني الـledger يدويًا بنفس الترتيب والرصيد المتحرك.
-  const ledger = [
-    ...ledgerFromTrips.map((e) => ({ ...e, source: 'report' })),
-    ...historical.map((h) => ({
-      source: 'historical',
-      date: h.date,
-      type: h.type || 'معاملة قديمة',
-      description: h.description || '',
-      delta: h.direction === 'له' ? Number(h.amount) || 0 : -(Number(h.amount) || 0),
-      amount: h.amount,
-      direction: h.direction,
-      id: h.id,
-    })),
-  ].sort((a, b) => (a.date < b.date ? -1 : a.date > b.date ? 1 : 0));
-  let balance = 0;
-  const fullLedger = ledger.map((entry) => { balance += entry.delta; return { ...entry, balance }; });
+  const fullLedger = buildLedger(ledgerFromTrips, historical);
 
   return {
     trips,
     totalWeight,
-    totalDue,
-    totalPaid,
-    totalRemaining: totalRemaining + totalFor - totalAgainst,
+    totalDue: totalDue + grossTotal,
+    totalPaid: totalPaid + paidTotal,
+    totalRemaining: (totalDue + grossTotal) - (totalPaid + paidTotal),
     historical,
     ledger: fullLedger,
   };
@@ -229,5 +242,25 @@ export async function getWorkerStatement(workerId, { from, to } = {}) {
   const totalDue = workDays.reduce((s, w) => s + (Number(w.dailyAmount) || 0), 0);
   const totalPaid = workDays.reduce((s, w) => s + (Number(w.paid) || 0), 0);
 
-  return { workDays, totalDays, totalHours, totalDue, totalPaid, totalRemaining: totalDue - totalPaid };
+  // عمليات قديمة إضافية للعامل (نفس نموذج القلاب/الكسارة/المورد الموحّد: مبلغ وتاريخ فقط + دفعات)
+  const { items: historical, grossTotal, paidTotal } = await historicalTransactionService.getEntityNet('worker', workerId);
+  const ledgerFromDays = workDays.map((w) => ({
+    date: w.date,
+    type: 'يومية',
+    description: w.shift || '',
+    delta: Number(w.remaining ?? ((Number(w.dailyAmount) || 0) - (Number(w.paid) || 0))) || 0,
+    reportId: w.reportId,
+  }));
+  const ledger = buildLedger(ledgerFromDays, historical);
+
+  return {
+    workDays,
+    totalDays,
+    totalHours,
+    totalDue: totalDue + grossTotal,
+    totalPaid: totalPaid + paidTotal,
+    totalRemaining: (totalDue + grossTotal) - (totalPaid + paidTotal),
+    historical,
+    ledger,
+  };
 }

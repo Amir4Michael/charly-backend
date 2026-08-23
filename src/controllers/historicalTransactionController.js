@@ -15,17 +15,27 @@ export function createHistoricalTransactionController(entityType) {
 
     create: asyncHandler(async (req, res) => {
       const item = await historicalTransactionService.createTransaction(entityType, req.params.id, req.body, req.user.id);
-      sendSuccess(res, { status: 201, data: item, message: 'تمت إضافة المعاملة القديمة بنجاح' });
+      sendSuccess(res, { status: 201, data: item, message: 'تمت إضافة العملية بنجاح' });
     }),
 
     update: asyncHandler(async (req, res) => {
       const item = await historicalTransactionService.updateTransaction(entityType, req.params.id, req.params.txId, req.body, req.user.id);
-      sendSuccess(res, { data: item, message: 'تم تحديث المعاملة القديمة بنجاح' });
+      sendSuccess(res, { data: item, message: 'تم تحديث العملية بنجاح' });
     }),
 
     remove: asyncHandler(async (req, res) => {
       await historicalTransactionService.deleteTransaction(entityType, req.params.id, req.params.txId);
-      sendSuccess(res, { message: 'تم حذف المعاملة القديمة بنجاح' });
+      sendSuccess(res, { message: 'تم حذف العملية بنجاح' });
+    }),
+
+    addPayment: asyncHandler(async (req, res) => {
+      const item = await historicalTransactionService.addPayment(entityType, req.params.id, req.params.txId, req.body, req.user.id);
+      sendSuccess(res, { status: 201, data: item, message: 'تمت إضافة الدفعة بنجاح' });
+    }),
+
+    removePayment: asyncHandler(async (req, res) => {
+      const item = await historicalTransactionService.removePayment(entityType, req.params.id, req.params.txId, req.params.paymentId, req.user.id);
+      sendSuccess(res, { data: item, message: 'تم حذف الدفعة' });
     }),
   };
 }

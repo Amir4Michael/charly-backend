@@ -26,4 +26,8 @@ router.post('/:id/historical-transactions', authorize('admin'), createHistorical
 router.put('/:id/historical-transactions/:txId', authorize('admin'), updateHistoricalTransactionValidator, validate, historical.update);
 router.delete('/:id/historical-transactions/:txId', authorize('admin'), txIdParamValidator, validate, historical.remove);
 
+// ——— الدفعات على المعاملات القديمة ———
+router.post('/:id/historical-transactions/:txId/payments', authorize('admin'), historical.addPayment);
+router.delete('/:id/historical-transactions/:txId/payments/:paymentId', authorize('admin'), historical.removePayment);
+
 export default router;

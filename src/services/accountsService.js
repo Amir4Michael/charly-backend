@@ -4,6 +4,8 @@ import Customer from '../models/Customer.js';
 import Quarry from '../models/Quarry.js';
 import Truck from '../models/Truck.js';
 import Worker from '../models/Worker.js';
+import * as historicalTransactionService from './historicalTransactionService.js';
+import { getGeneralSalesTotal } from './generalSaleService.js';
 
 /**
  * كل هذه الدوال تجمع أرصدة كل الكيانات دفعة واحدة (Single-pass $group)
@@ -96,7 +98,7 @@ async function getReportTotals() {
 
 /** يطابق منطق AccountsPage.jsx بالفرونت بالكامل: المبيعات، المصاريف، والمستحقات لكل جهة */
 export async function getAccountsOverview() {
-  const [customerBalances, quarryBalances, truckBalances, workerBalances, { totalSales, embeddedExpenses }, standaloneExpensesAgg] =
+  const [customerBalances, quarryBalances, truckBalances, workerBalances, { totalSales: reportsTotalSales, embeddedExpenses }, standaloneExpensesAgg, generalSalesTotal] =
     await Promise.all([
       getCustomerBalances(),
       getQuarryBalances(),
@@ -104,6 +106,7 @@ export async function getAccountsOverview() {
       getWorkerBalances(),
       getReportTotals(),
       Expense.aggregate([{ $group: { _id: null, total: { $sum: '$amount' } } }]),
+      getGeneralSalesTotal(),
     ]);
 
   const standaloneExpenses = standaloneExpensesAgg[0]?.total || 0;
@@ -122,38 +125,75 @@ export async function getAccountsOverview() {
   const truckNames = nameById(trucks);
   const workerNames = nameById(workers);
 
-  const customerRows = customerBalances
-    .map((b) => ({
-      id: b._id,
-      name: customerNames[b._id.toString()] || 'غير معروف',
-      due: b.totalSales,
-      paid: b.cashSales + b.creditPaid,
-      remaining: b.totalRemaining,
-    }))
+  // معاملات العملاء القديمة (بما فيها عمليات "الكمية والسعر") تدخل في إجمالي مبيعات/مدفوعات
+  // كل عميل — نفس القاعدة المطبّقة في statementService.getCustomerStatement بالضبط (قسم 13)،
+  // لضمان ألا تعرض صفحة الحسابات رقمًا مختلفًا عن صفحة تفاصيل العميل لنفس البيانات.
+  const [customerHistoricalTotals, truckHistoricalTotals, workerHistoricalTotals] = await Promise.all([
+    historicalTransactionService.getNetTotalsForEntities('customer', customers.map((c) => c._id)),
+    historicalTransactionService.getNetTotalsForEntities('truck', trucks.map((t) => t._id)),
+    historicalTransactionService.getNetTotalsForEntities('worker', workers.map((w) => w._id)),
+  ]);
+
+  const balanceByCustomerId = Object.fromEntries(customerBalances.map((b) => [b._id.toString(), b]));
+  const allCustomerIds = new Set([
+    ...customerBalances.map((b) => b._id.toString()),
+    ...Object.keys(customerHistoricalTotals),
+  ]);
+
+  let customerHistoricalSalesTotal = 0;
+  const customerRows = Array.from(allCustomerIds)
+    .map((customerId) => {
+      const b = balanceByCustomerId[customerId] || { totalSales: 0, cashSales: 0, creditPaid: 0, totalRemaining: 0 };
+      const hist = customerHistoricalTotals[customerId] || { grossTotal: 0, paidTotal: 0 };
+      customerHistoricalSalesTotal += hist.grossTotal;
+      const due = b.totalSales + hist.grossTotal;
+      const paid = b.cashSales + b.creditPaid + hist.paidTotal;
+      return {
+        id: customerId,
+        name: customerNames[customerId] || 'غير معروف',
+        due,
+        paid,
+        remaining: due - paid,
+      };
+    })
     .filter((r) => r.due > 0 || r.remaining > 0);
+
+  // إجمالي مبيعات المصنع الكلي = مبيعات عمليات التقارير اليومية + المبيعات "القديمة/بالكمية
+  // والسعر" الخاصة بالعملاء + المبيعات العامة غير المرتبطة بأي عميل (قسم 2 و11 من الطلب).
+  const totalSales = reportsTotalSales + customerHistoricalSalesTotal + generalSalesTotal;
 
   const quarryRows = quarryBalances
     .map((b) => ({ id: b._id, name: quarryNames[b._id.toString()] || 'غير معروف', due: b.totalWeight }))
     .filter((r) => r.due > 0);
 
-  const truckRows = truckBalances
-    .map((b) => ({
-      id: b._id,
-      name: truckNames[b._id.toString()] || 'غير معروف',
-      due: b.totalDue,
-      paid: b.totalPaid,
-      remaining: b.totalRemaining,
-    }))
+  const balanceByTruckId = Object.fromEntries(truckBalances.map((b) => [b._id.toString(), b]));
+  const allTruckIds = new Set([
+    ...truckBalances.map((b) => b._id.toString()),
+    ...Object.keys(truckHistoricalTotals),
+  ]);
+  const truckRows = Array.from(allTruckIds)
+    .map((truckId) => {
+      const b = balanceByTruckId[truckId] || { totalDue: 0, totalPaid: 0 };
+      const hist = truckHistoricalTotals[truckId] || { grossTotal: 0, paidTotal: 0 };
+      const due = b.totalDue + hist.grossTotal;
+      const paid = b.totalPaid + hist.paidTotal;
+      return { id: truckId, name: truckNames[truckId] || 'غير معروف', due, paid, remaining: due - paid };
+    })
     .filter((r) => r.due > 0 || r.remaining > 0);
 
-  const workerRows = workerBalances
-    .map((b) => ({
-      id: b._id,
-      name: workerNames[b._id.toString()] || 'غير معروف',
-      due: b.totalDue,
-      paid: b.totalPaid,
-      remaining: b.totalDue - b.totalPaid,
-    }))
+  const balanceByWorkerId = Object.fromEntries(workerBalances.map((b) => [b._id.toString(), b]));
+  const allWorkerIds = new Set([
+    ...workerBalances.map((b) => b._id.toString()),
+    ...Object.keys(workerHistoricalTotals),
+  ]);
+  const workerRows = Array.from(allWorkerIds)
+    .map((workerId) => {
+      const b = balanceByWorkerId[workerId] || { totalDue: 0, totalPaid: 0 };
+      const hist = workerHistoricalTotals[workerId] || { grossTotal: 0, paidTotal: 0 };
+      const due = b.totalDue + hist.grossTotal;
+      const paid = b.totalPaid + hist.paidTotal;
+      return { id: workerId, name: workerNames[workerId] || 'غير معروف', due, paid, remaining: due - paid };
+    })
     .filter((r) => r.due > 0 || r.remaining > 0);
 
   const receivable = customerRows.reduce((s, r) => s + r.remaining, 0);
@@ -162,6 +202,7 @@ export async function getAccountsOverview() {
 
   return {
     totalSales,
+    generalSalesTotal,
     totalExpenses,
     net: totalSales - totalExpenses,
     receivable,

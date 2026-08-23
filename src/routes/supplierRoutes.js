@@ -6,6 +6,7 @@ import {
 } from '../validators/supplierValidators.js';
 import {
   entityIdParamValidator, txIdParamValidator, createHistoricalTransactionValidator, updateHistoricalTransactionValidator,
+  addPaymentValidator, paymentIdParamValidator,
 } from '../validators/historicalTransactionValidators.js';
 import {
   listSuppliers, getSupplier, createSupplier, updateSupplier, deleteSupplier,
@@ -28,5 +29,8 @@ router.get('/:type/:id/historical-transactions', [...typeParamValidator, ...enti
 router.post('/:type/:id/historical-transactions', authorize('admin'), [...typeParamValidator, ...createHistoricalTransactionValidator], validate, historical.create);
 router.put('/:type/:id/historical-transactions/:txId', authorize('admin'), [...typeParamValidator, ...updateHistoricalTransactionValidator], validate, historical.update);
 router.delete('/:type/:id/historical-transactions/:txId', authorize('admin'), [...typeParamValidator, ...txIdParamValidator], validate, historical.remove);
+
+router.post('/:type/:id/historical-transactions/:txId/payments', authorize('admin'), [...typeParamValidator, ...addPaymentValidator], validate, historical.addPayment);
+router.delete('/:type/:id/historical-transactions/:txId/payments/:paymentId', authorize('admin'), [...typeParamValidator, ...paymentIdParamValidator], validate, historical.removePayment);
 
 export default router;
