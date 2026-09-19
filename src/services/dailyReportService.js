@@ -4,14 +4,16 @@ import truckService from './truckService.js';
 import workerService from './workerService.js';
 import customerService from './customerService.js';
 import { getMaterials } from './materialOptionService.js';
-import { hoursBetween } from '../utils/time.js';
 import { ApiError } from '../utils/apiResponse.js';
 
 /**
- * يتحقق أن كل القيم الديناميكية (نوع الخامة، درجة النعومة، نوع العبوة) موجودة فعليًا
+ * يتحقق أن كل القيم الديناميكية (درجة النعومة، نوع العبوة، نوع السيارة) موجودة فعليًا
  * ضمن قوائم MaterialOption الحالية — تمامًا كما يعرضها الفرونت في القوائم المنسدلة،
  * بدلاً من enum ثابت كان سيرفض أي قيمة جديدة يضيفها المستخدم عبر صفحة الخامات.
  * لا يرفض القيمة الفارغة (الحقل اختياري في أغلب الأحيان)، فقط يرفض قيمة غير فارغة وغير معروفة.
+ *
+ * ملاحظة بعد إعادة الهيكلة: لم يعد هناك تحقق على "نوع الخامة" (raw.type حُذف بالكامل من
+ * التقرير) ولا على حقول production (القسم حُذف بالكامل) — بقي فقط تحقق حقول loading.
  */
 /**
  * الجزء النقي (Pure) من التحقق — يستقبل قوائم المواد جاهزة بدل استعلام DB مباشرة،
@@ -26,11 +28,6 @@ export function checkDynamicEnums(payload, materials) {
     }
   };
 
-  checkValue(payload.raw?.type, materials.rawTypes, 'نوع الخامة');
-  (payload.production || []).forEach((p, i) => {
-    checkValue(p.fineness, materials.fineness, `درجة نعومة الإنتاج #${i + 1}`);
-    checkValue(p.packaging, materials.packagingProduction, `عبوة الإنتاج #${i + 1}`);
-  });
   (payload.loading || []).forEach((l, i) => {
     checkValue(l.fineness, materials.fineness, `درجة نعومة التحميل #${i + 1}`);
     checkValue(l.packaging, materials.packagingLoading, `عبوة التحميل #${i + 1}`);
@@ -52,35 +49,49 @@ async function validateDynamicEnums(payload) {
  * يربط كل الأسماء النصية (كسارة/قلاب/عميل/عامل) بمعرّفاتها الحقيقية عبر findOrCreateByName
  * (يُنشئ السجل تلقائيًا لو لم يوجد بعد) — نفس المنطق الذي كان يُنفَّذ من DailyReportFormPage.jsx
  * بالفرونت، لكن الآن في الـBackend كمصدر ثقة وحيد (Defense in depth).
- * ثم يعيد حساب كل الحقول المُشتقة (totals, remaining, runHours, operator/workersCount/workers).
+ * ثم يعيد حساب كل الحقول المُشتقة (totals, remaining, operator/workersCount/workers).
  */
 async function prepareReportPayload(input) {
   const payload = { ...input };
 
-  // ——— الخامة والكسارة ———
-  if (payload.raw?.crusher?.trim()) {
-    const quarry = await quarryService.findOrCreateByName(payload.raw.crusher);
-    payload.raw.quarryId = quarry._id;
-  }
+  // ——— الخامة: صفوف متعددة، كل صف = كسارة + قلاب + وزن + سعرين منفصلين ———
+  // مصدرين ماليين منفصلين تمامًا لكل صف:
+  //   materialTotal  = weight × materialUnitPrice  (قيمة الخامة — عرض فقط، لا تُستخدم في أي رصيد)
+  //   transportTotal = weight × truckRate           (قيمة نقلة القلاب — مصدر paid/remaining القلاب)
+  // الصف يُحفظ فقط لو فيه كسارة أو قلاب محدد (تمامًا كما كانت tippers تُفلتر بوجود اسم).
+  payload.materials = await Promise.all(
+    (payload.materials || [])
+      .filter((m) => m.crusher?.trim() || m.truck?.trim())
+      .map(async (m) => {
+        const quarryId = m.crusher?.trim() ? (await quarryService.findOrCreateByName(m.crusher))._id : undefined;
+        const truckId = m.truck?.trim() ? (await truckService.findOrCreateByName(m.truck))._id : undefined;
 
-  // ——— القلابات ———
-  payload.tippers = await Promise.all(
-    (payload.tippers || [])
-      .filter((t) => t.name?.trim())
-      .map(async (t) => {
-        const truck = await truckService.findOrCreateByName(t.name);
-        const weight = Number(t.weight) || 0;
-        const rate = Number(t.rate) || 0;
-        const paid = Number(t.paid) || 0;
-        const total = weight * rate;
-        return { ...t, truckId: truck._id, weight, rate, paid, total, remaining: Math.max(total - paid, 0) };
+        const weight = Number(m.weight) || 0;
+
+        // materialUnitPrice اختياري صراحةً بلا قيمة افتراضية (مطابق raw.price سابقًا) — لا نفرض
+        // صفرًا يوهم بسعر حقيقي؛ لو لم يُدخَل، يبقى undefined ولا يدخل ضمن materialTotal.
+        const hasPrice = m.materialUnitPrice !== undefined && m.materialUnitPrice !== null && m.materialUnitPrice !== '';
+        const materialUnitPrice = hasPrice ? Number(m.materialUnitPrice) : undefined;
+        const materialTotal = hasPrice ? weight * materialUnitPrice : 0;
+
+        const truckRate = Number(m.truckRate) || 0;
+        const paid = Number(m.paid) || 0;
+        const transportTotal = weight * truckRate;
+
+        return {
+          ...m,
+          quarryId,
+          truckId,
+          weight,
+          materialUnitPrice,
+          materialTotal,
+          truckRate,
+          transportTotal,
+          paid,
+          remaining: Math.max(transportTotal - paid, 0),
+        };
       }),
   );
-
-  // ——— ساعات التشغيل ———
-  payload.operatingHours = (payload.operatingHours || [])
-    .filter((h) => h.runStart || h.runEnd || h.stopHours)
-    .map((h) => ({ ...h, runHours: hoursBetween(h.runStart, h.runEnd), stopHours: Number(h.stopHours) || 0 }));
 
   // ——— فرق التشغيل (مشغل + عمال) لكل وردية ———
   const shiftTeams = await Promise.all(
@@ -104,16 +115,6 @@ async function prepareReportPayload(input) {
   payload.operator = payload.shiftTeams[0]?.operator || '';
   payload.workersCount = payload.shiftTeams.reduce((s, t) => s + (Number(t.workersCount) || t.workers.length || 0), 0);
   payload.workers = payload.shiftTeams.flatMap((t) => t.workers);
-
-  // ——— الإنتاج والتعبئة ———
-  payload.production = await Promise.all(
-    (payload.production || [])
-      .filter((p) => p.fineness || p.customer)
-      .map(async (p) => {
-        const customerId = p.customer?.trim() ? (await customerService.findOrCreateByName(p.customer))._id : undefined;
-        return { ...p, customerId };
-      }),
-  );
 
   // ——— التحميل ———
   payload.loading = await Promise.all(

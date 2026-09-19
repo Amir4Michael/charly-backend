@@ -1,9 +1,12 @@
 import mongoose from 'mongoose';
 import { withIdTransform } from '../utils/mongooseIdPlugin.js';
 
-/** Worker (عامل/مشغل) — مطابق لـworkersService.js في الفرونت بالضبط.
- * "المشغل" (Operator) ليس Model منفصل — هو Worker بـ job = 'مشغل' (نفس منطق الفرونت). */
-export const WORKER_JOBS = ['مشغل', 'ميكانيكي', 'كهربائي', 'سائق', 'عامل إنتاج', 'عامل تحميل', 'حارس'];
+/** Worker (عامل/مشغل/مدير) — مطابق لـworkersService.js في الفرونت بالضبط.
+ * "المشغل" (Operator) و"مدير المصنع" (Manager) ليسا Model منفصل — كل منهما Worker بـ
+ * job='مشغل' أو job='مدير' على التوالي (نفس منطق الفرونت). أُضيفت 'مدير' هنا حتى يمكن
+ * إدارة مديري المصنع عبر نفس صفحة/CRUD العمال الموجودة أصلًا، بدل إنشاء Entity وBackend
+ * منفصلين بالكامل لمفهوم لا يختلف عن Worker في شيء غير التسمية والاستخدام في التقرير اليومي. */
+export const WORKER_JOBS = ['مدير', 'مشغل', 'ميكانيكي', 'كهربائي', 'سائق', 'عامل إنتاج', 'عامل تحميل', 'حارس'];
 
 const workerSchema = new mongoose.Schema(
   {

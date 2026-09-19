@@ -25,36 +25,39 @@ export async function removeOption(category, value) {
   return MaterialOption.findOneAndDelete({ category, value });
 }
 
-function toTons(weight, unit) {
-  const w = Number(weight) || 0;
-  return unit === 'كيلو' ? w / 1000 : w;
-}
-
 /**
- * الجزء النقي (Pure) من حساب التقرير — يستقبل مصفوفة تقارير جاهزة (raw + loading فقط)
+ * الجزء النقي (Pure) من حساب التقرير — يستقبل مصفوفة تقارير جاهزة (materials + loading فقط)
  * بدل استعلام DB مباشرة، فيسهل اختباره بمعزل تمامًا مثل checkDynamicEnums في dailyReportService.js.
+ *
+ * ⚠️ تغيير بعد إعادة الهيكلة (raw{} → materials[]): "نوع الخامة" (raw.type) حُذف بالكامل من
+ * النظام، فلم يعد ممكنًا تصنيف "الداخل" حسب نوع الخامة كما كان سابقًا (incomingByType).
+ * تم التصنيف بدلًا من ذلك حسب "الكسارة" (incomingByQuarry) — أقرب تصنيف منطقي متاح الآن،
+ * ويدعم أيضًا وجود أكثر من صف/كسارة في نفس التقرير (وهو ما لم يكن ممكنًا في raw{} القديم).
+ * أيضًا لم تعد هناك وحدة وزن (طن/كيلو) — الوزن بالطن دائمًا الآن، فحذفت أي تحويل وحدات.
  */
 export function computeInventoryFromReports(reports) {
-  const incomingByType = {};
+  const incomingByQuarry = {};
   let incomingTotal = 0;
   let incomingValue = 0;
   let hasAnyPrice = false;
 
   reports.forEach((r) => {
-    const raw = r.raw;
-    if (!raw?.type || !raw?.weight) return;
-    const tons = toTons(raw.weight, raw.unit);
-    incomingTotal += tons;
-    if (!incomingByType[raw.type]) incomingByType[raw.type] = { count: 0, tons: 0, value: 0, hasPrice: false };
-    incomingByType[raw.type].count += 1;
-    incomingByType[raw.type].tons += tons;
-    if (Number(raw.price) > 0) {
-      const value = tons * Number(raw.price);
-      incomingByType[raw.type].value += value;
-      incomingByType[raw.type].hasPrice = true;
-      incomingValue += value;
-      hasAnyPrice = true;
-    }
+    (r.materials || []).forEach((m) => {
+      if (!m.weight) return;
+      const tons = Number(m.weight) || 0;
+      const label = m.crusher || 'غير محدد';
+      incomingTotal += tons;
+      if (!incomingByQuarry[label]) incomingByQuarry[label] = { count: 0, tons: 0, value: 0, hasPrice: false };
+      incomingByQuarry[label].count += 1;
+      incomingByQuarry[label].tons += tons;
+      if (Number(m.materialUnitPrice) > 0) {
+        const value = tons * Number(m.materialUnitPrice);
+        incomingByQuarry[label].value += value;
+        incomingByQuarry[label].hasPrice = true;
+        incomingValue += value;
+        hasAnyPrice = true;
+      }
+    });
   });
 
   const outputByFineness = {};
@@ -71,7 +74,7 @@ export function computeInventoryFromReports(reports) {
   });
 
   return {
-    incomingByType,
+    incomingByQuarry,
     incomingTotal,
     incomingValue,
     hasAnyPrice,
@@ -94,6 +97,6 @@ export async function getInventoryReport({ from, to } = {}) {
     if (from) filter.date.$gte = from;
     if (to) filter.date.$lte = to;
   }
-  const reports = await DailyReport.find(filter).select('date raw loading');
+  const reports = await DailyReport.find(filter).select('date materials loading');
   return computeInventoryFromReports(reports);
 }

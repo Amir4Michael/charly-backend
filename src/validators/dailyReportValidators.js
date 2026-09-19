@@ -7,25 +7,21 @@ export const createReportValidator = [
   body('managers').optional().isArray().withMessage('المديرون يجب أن تكون مصفوفة'),
   body('shifts').optional().isArray().withMessage('الورديات يجب أن تكون مصفوفة'),
 
-  body('raw.weight').optional().isFloat({ min: 0 }).withMessage('وزن الخامة يجب أن يكون رقمًا موجبًا'),
-  body('raw.price').optional({ checkFalsy: true }).isFloat({ min: 0 }).withMessage('سعر الخامة يجب أن يكون رقمًا موجبًا'),
-
-  body('tippers').optional().isArray(),
-  body('tippers.*.weight').optional().isFloat({ min: 0 }).withMessage('وزن القلاب يجب أن يكون رقمًا موجبًا'),
-  body('tippers.*.rate').optional().isFloat({ min: 0 }).withMessage('سعر النقلة يجب أن يكون رقمًا موجبًا'),
-  body('tippers.*.paid').optional().isFloat({ min: 0 }).withMessage('المدفوع للقلاب يجب أن يكون رقمًا موجبًا'),
-
-  body('operatingHours').optional().isArray(),
-  body('operatingHours.*.stopHours').optional().isFloat({ min: 0 }).withMessage('ساعات التوقف يجب أن تكون رقمًا موجبًا'),
+  // ——— الخامة (صفوف متعددة: كسارة + قلاب لكل صف) ———
+  body('materials').optional().isArray(),
+  body('materials.*.weight').optional().isFloat({ min: 0 }).withMessage('وزن الخامة يجب أن يكون رقمًا موجبًا'),
+  body('materials.*.materialUnitPrice')
+    .optional({ checkFalsy: true })
+    .isFloat({ min: 0 })
+    .withMessage('سعر الخامة يجب أن يكون رقمًا موجبًا'),
+  body('materials.*.truckRate').optional().isFloat({ min: 0 }).withMessage('سعر النقلة يجب أن يكون رقمًا موجبًا'),
+  body('materials.*.paid').optional().isFloat({ min: 0 }).withMessage('المدفوع للقلاب يجب أن يكون رقمًا موجبًا'),
 
   body('shiftTeams').optional().isArray(),
   body('shiftTeams.*.workers').optional().isArray(),
   body('shiftTeams.*.workers.*.hours').optional().isFloat({ min: 0 }).withMessage('ساعات العامل يجب أن تكون رقمًا موجبًا'),
   body('shiftTeams.*.workers.*.dailyAmount').optional().isFloat({ min: 0 }).withMessage('يومية العامل يجب أن تكون رقمًا موجبًا'),
   body('shiftTeams.*.workers.*.paid').optional().isFloat({ min: 0 }).withMessage('المدفوع للعامل يجب أن يكون رقمًا موجبًا'),
-
-  body('production').optional().isArray(),
-  body('production.*.hours').optional().isFloat({ min: 0 }).withMessage('ساعات الإنتاج يجب أن تكون رقمًا موجبًا'),
 
   body('loading').optional().isArray(),
   body('loading.*.weight').optional().isFloat({ min: 0 }).withMessage('وزن التحميل يجب أن يكون رقمًا موجبًا'),

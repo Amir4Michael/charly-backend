@@ -38,23 +38,35 @@ async function getCustomerBalances() {
 }
 
 async function getQuarryBalances() {
+  // بعد الانتقال من raw{} (كسارة واحدة لليوم) إلى materials[] (عدة صفوف/كسارات في نفس اليوم)،
+  // لازم $unwind قبل التجميع — كسارة واحدة ممكن تتكرر في أكتر من صف بنفس التقرير.
   return DailyReport.aggregate([
-    { $match: { 'raw.quarryId': { $ne: null } } },
-    { $group: { _id: '$raw.quarryId', totalWeight: { $sum: { $ifNull: ['$raw.weight', 0] } } } },
+    { $unwind: '$materials' },
+    { $match: { 'materials.quarryId': { $ne: null } } },
+    {
+      $group: {
+        _id: '$materials.quarryId',
+        totalWeight: { $sum: { $ifNull: ['$materials.weight', 0] } },
+        deliveriesCount: { $sum: 1 },
+      },
+    },
   ]);
 }
 
 async function getTruckBalances() {
+  // totalDue يُجمَّع من transportTotal فقط (قيمة نقلة القلاب) — مش materialTotal (قيمة الخامة)،
+  // حتى لا تختلط مستحقات القلاب بفلوس الخامة المستحقة للكسارة (الكسارة ليس لها مستحق مالي هنا أصلًا).
   return DailyReport.aggregate([
-    { $unwind: '$tippers' },
-    { $match: { 'tippers.truckId': { $ne: null } } },
+    { $unwind: '$materials' },
+    { $match: { 'materials.truckId': { $ne: null } } },
     {
       $group: {
-        _id: '$tippers.truckId',
-        totalWeight: { $sum: { $ifNull: ['$tippers.weight', 0] } },
-        totalDue: { $sum: { $ifNull: ['$tippers.total', 0] } },
-        totalPaid: { $sum: { $ifNull: ['$tippers.paid', 0] } },
-        totalRemaining: { $sum: { $ifNull: ['$tippers.remaining', 0] } },
+        _id: '$materials.truckId',
+        totalWeight: { $sum: { $ifNull: ['$materials.weight', 0] } },
+        totalDue: { $sum: { $ifNull: ['$materials.transportTotal', 0] } },
+        totalPaid: { $sum: { $ifNull: ['$materials.paid', 0] } },
+        totalRemaining: { $sum: { $ifNull: ['$materials.remaining', 0] } },
+        tripsCount: { $sum: 1 },
       },
     },
   ]);
@@ -163,7 +175,7 @@ export async function getAccountsOverview() {
   const totalSales = reportsTotalSales + customerHistoricalSalesTotal + generalSalesTotal;
 
   const quarryRows = quarryBalances
-    .map((b) => ({ id: b._id, name: quarryNames[b._id.toString()] || 'غير معروف', due: b.totalWeight }))
+    .map((b) => ({ id: b._id, name: quarryNames[b._id.toString()] || 'غير معروف', due: b.totalWeight, count: b.deliveriesCount || 0 }))
     .filter((r) => r.due > 0);
 
   const balanceByTruckId = Object.fromEntries(truckBalances.map((b) => [b._id.toString(), b]));
@@ -173,13 +185,18 @@ export async function getAccountsOverview() {
   ]);
   const truckRows = Array.from(allTruckIds)
     .map((truckId) => {
-      const b = balanceByTruckId[truckId] || { totalDue: 0, totalPaid: 0 };
+      const b = balanceByTruckId[truckId] || { totalDue: 0, totalPaid: 0, totalWeight: 0, tripsCount: 0 };
       const hist = truckHistoricalTotals[truckId] || { grossTotal: 0, paidTotal: 0 };
       const due = b.totalDue + hist.grossTotal;
       const paid = b.totalPaid + hist.paidTotal;
-      return { id: truckId, name: truckNames[truckId] || 'غير معروف', due, paid, remaining: due - paid };
+      return {
+        id: truckId, name: truckNames[truckId] || 'غير معروف', due, paid, remaining: due - paid,
+        totalWeight: b.totalWeight || 0, tripsCount: b.tripsCount || 0,
+      };
     })
-    .filter((r) => r.due > 0 || r.remaining > 0);
+    // نعرض القلاب لو عليه مستحق/متبقي، أو لو نقل وزن فعلي حتى بدون سعر نقلة مُسجَّل
+    // (بدل الاقتصار على "عنده فلوس مستحقة" فقط، اللي كان بيُخفي قلابات نقلت فعليًا).
+    .filter((r) => r.due > 0 || r.remaining > 0 || r.totalWeight > 0);
 
   const balanceByWorkerId = Object.fromEntries(workerBalances.map((b) => [b._id.toString(), b]));
   const allWorkerIds = new Set([
@@ -188,11 +205,14 @@ export async function getAccountsOverview() {
   ]);
   const workerRows = Array.from(allWorkerIds)
     .map((workerId) => {
-      const b = balanceByWorkerId[workerId] || { totalDue: 0, totalPaid: 0 };
+      const b = balanceByWorkerId[workerId] || { totalDue: 0, totalPaid: 0, totalDays: 0 };
       const hist = workerHistoricalTotals[workerId] || { grossTotal: 0, paidTotal: 0 };
       const due = b.totalDue + hist.grossTotal;
       const paid = b.totalPaid + hist.paidTotal;
-      return { id: workerId, name: workerNames[workerId] || 'غير معروف', due, paid, remaining: due - paid };
+      return {
+        id: workerId, name: workerNames[workerId] || 'غير معروف', due, paid, remaining: due - paid,
+        totalDays: b.totalDays || 0,
+      };
     })
     .filter((r) => r.due > 0 || r.remaining > 0);
 

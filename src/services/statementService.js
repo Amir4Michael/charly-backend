@@ -11,7 +11,7 @@ import * as historicalTransactionService from './historicalTransactionService.js
  * تحديث: تم دمج المعاملات القديمة (HistoricalTransaction) في كشف حساب العميل والقلاب
  * ضمن نفس مصدر البيانات الحقيقي (وليس نسخة منفصلة للعرض فقط)، مع رصيد متحرك (running
  * balance) محسوب فعليًا من كل العمليات (القديمة من الدفاتر + الجديدة من النظام) مرتبة بالتاريخ.
- * الكسارة (Quarry) ليس لها حاليًا مفهوم "مستحق مالي" في business logic الحالي (raw.weight فقط،
+ * الكسارة (Quarry) ليس لها حاليًا مفهوم "مستحق مالي" في business logic الحالي (materials[].weight فقط،
  * بدون paid/remaining) — لذلك لا نخترع رصيدًا ماليًا مدمجًا لها؛ المعاملات القديمة تُعرض
  * كسجل مالي حقيقي مستقل بجانب سجل التوريدات (وزن فقط)، دون خلط الاثنين.
  */
@@ -123,20 +123,41 @@ export async function getCustomerStatement(customerId, { from, to } = {}) {
   };
 }
 
-/** كشف حساب كسارة — مطابق computeQuarryStats (raw ليست مصفوفة، فلا حاجة لـ$unwind) */
+/**
+ * كشف حساب كسارة — بعد الانتقال إلى materials[] (عدة صفوف/كسارات بنفس التقرير) بقى لازم
+ * Aggregation بـ$unwind بدل find مباشر (كانت raw كائن واحد فقط، فمكنش محتاج $unwind قديمًا).
+ * ميزة إضافية طبيعية من التصميم الجديد: كل نقلة (delivery) هنا مرتبطة بقلاب واحد محدد
+ * (نفس صف الخامة)، بدل كل قلابات اليوم مجمّعين مع بعض كما كان الحال سابقًا.
+ */
 export async function getQuarryStatement(quarryId, { from, to } = {}) {
   const id = new mongoose.Types.ObjectId(quarryId);
-  const reports = await DailyReport.find({ ...dateMatch(from, to), 'raw.quarryId': id })
-    .select('date raw tippers')
-    .sort({ date: -1 });
+  const pipeline = [
+    { $match: dateMatch(from, to) },
+    { $unwind: '$materials' },
+    { $match: { 'materials.quarryId': id } },
+    {
+      $project: {
+        _id: 0,
+        reportId: '$_id',
+        date: '$date',
+        weight: '$materials.weight',
+        truck: '$materials.truck',
+        materialUnitPrice: '$materials.materialUnitPrice',
+        materialTotal: '$materials.materialTotal',
+      },
+    },
+    { $sort: { date: -1 } },
+  ];
 
-  const deliveries = reports.map((r) => ({
+  const rows = await DailyReport.aggregate(pipeline);
+
+  const deliveries = rows.map((r) => ({
     date: r.date,
-    material: r.raw?.type,
-    weight: r.raw?.weight,
-    unit: r.raw?.unit || 'طن',
-    trucks: (r.tippers || []).map((t) => t.name),
-    reportId: r._id,
+    weight: r.weight,
+    truck: r.truck,
+    materialUnitPrice: r.materialUnitPrice,
+    materialTotal: r.materialTotal,
+    reportId: r.reportId,
   }));
 
   const totalWeight = deliveries.reduce((s, d) => s + (Number(d.weight) || 0), 0);
@@ -157,26 +178,30 @@ export async function getQuarryStatement(quarryId, { from, to } = {}) {
   };
 }
 
-/** كشف حساب قلاب — مطابق computeTruckStats + معاملات قديمة (delta موجب = المصنع مدين للقلاب أكثر) */
+/**
+ * كشف حساب قلاب — بعد الانتقال إلى materials[] بقى كل رحلة مرتبطة مباشرة بصف خامة واحد،
+ * فمعلومات الكسارة (quarry/quarryId) بقت أدق (خاصة بنفس الرحلة، مش كل كسارات اليوم).
+ * totalDue يُبنى من transportTotal فقط (مصاريف النقل) — لا علاقة له بـmaterialTotal
+ * (قيمة الخامة نفسها، المستحقة للكسارة منطقيًا لا للقلاب) — تفاديًا لأي خلط بين الجهتين.
+ */
 export async function getTruckStatement(truckId, { from, to } = {}) {
   const id = new mongoose.Types.ObjectId(truckId);
   const pipeline = [
     { $match: dateMatch(from, to) },
-    { $unwind: '$tippers' },
-    { $match: { 'tippers.truckId': id } },
+    { $unwind: '$materials' },
+    { $match: { 'materials.truckId': id } },
     {
       $project: {
         _id: 0,
         reportId: '$_id',
         date: '$date',
-        weight: '$tippers.weight',
-        rate: '$tippers.rate',
-        total: '$tippers.total',
-        paid: '$tippers.paid',
-        remaining: '$tippers.remaining',
-        material: '$raw.type',
-        quarry: '$raw.crusher',
-        quarryId: '$raw.quarryId',
+        weight: '$materials.weight',
+        rate: '$materials.truckRate',
+        total: '$materials.transportTotal',
+        paid: '$materials.paid',
+        remaining: '$materials.remaining',
+        quarry: '$materials.crusher',
+        quarryId: '$materials.quarryId',
       },
     },
     { $sort: { date: -1 } },
@@ -195,7 +220,7 @@ export async function getTruckStatement(truckId, { from, to } = {}) {
   const ledgerFromTrips = trips.map((t) => ({
     date: t.date,
     type: 'رحلة',
-    description: [t.material, t.quarry].filter(Boolean).join(' — '),
+    description: t.quarry || '',
     delta: Number(t.remaining) || 0,
     reportId: t.reportId,
   }));

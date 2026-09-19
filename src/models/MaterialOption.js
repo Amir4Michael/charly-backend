@@ -2,12 +2,17 @@ import mongoose from 'mongoose';
 import { withIdTransform } from '../utils/mongooseIdPlugin.js';
 
 /**
- * MaterialOption — بديل مُطبَّع (Normalized) للأربع مصفوفات في materialsService.js بالفرونت
- * (rawTypes, fineness, packagingProduction, packagingLoading). القرار والسبب موثّقان في
- * BACKEND_BLUEPRINT.md قسم 1.2. أسماء الـcategory هنا مطابقة حرفيًا لمفاتيح
- * DEFAULTS في materialsService.js حتى يكون تجميع الاستجابة في الـController مباشرًا.
+ * MaterialOption — بديل مُطبَّع (Normalized) لمصفوفات materialsService.js بالفرونت.
+ * أسماء الـcategory هنا مطابقة حرفيًا لمفاتيح DEFAULTS في materialsService.js حتى يكون
+ * تجميع الاستجابة في الـController مباشرًا.
+ *
+ * ملاحظة بعد إعادة الهيكلة: فئتا rawTypes (كانت لـ"نوع الخامة") وpackagingProduction (كانت
+ * لقسم "الإنتاج والتعبئة") حُذفتا نهائيًا من هنا — الحقل الأول أُلغي بالكامل من التقرير اليومي،
+ * والقسم الثاني أُلغي بالكامل هو نفسه. أي قيم كانت مخزّنة سابقًا تحت الفئتين دول في قاعدة
+ * البيانات تظل موجودة كسجلات (لم تُحذف بيانات)، لكنها لن تظهر في getMaterials() بعد الآن
+ * لأنها لم تعد ضمن MATERIAL_CATEGORIES، ولن تُقرأ أو تُستخدم من أي مكان في الكود.
  */
-export const MATERIAL_CATEGORIES = ['rawTypes', 'fineness', 'packagingProduction', 'packagingLoading', 'vehicleTypes'];
+export const MATERIAL_CATEGORIES = ['fineness', 'packagingLoading', 'vehicleTypes'];
 
 const materialOptionSchema = new mongoose.Schema(
   {

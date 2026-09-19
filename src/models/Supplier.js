@@ -7,7 +7,7 @@ import { withIdTransform } from '../utils/mongooseIdPlugin.js';
  * قرار تصميم: Collection واحدة بحقل "type" مُميّز بدل 3 Collections منفصلة، لأن الثلاثة
  * أنواع متطابقة الحقول تمامًا (اسم، جهة اتصال، هاتف، عنوان، ملاحظات) — بعكس الكسارة/القلاب/
  * العامل/العميل الحاليين اللي كل واحد منهم له حقول مختلفة فعليًا (owner/driver+plateNumber/
- * job+dailyRate/contactPerson). هذا يطابق نفس منطق فصل rawTypes/fineness/... في MaterialOption
+ * job+dailyRate/contactPerson). هذا يطابق نفس منطق فصل fineness/packagingLoading/... في MaterialOption
  * (فئات متجانسة الشكل، مُميَّزة بحقل category/type بدل تكرار Schema).
  *
  * ملاحظة نطاق: لا يوجد "كشف حساب" لهذه الأنواع (بعكس الكسارة) لأنه لا يوجد حاليًا أي ربط
