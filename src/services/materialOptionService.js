@@ -2,9 +2,18 @@ import MaterialOption from '../models/MaterialOption.js';
 import { MATERIAL_CATEGORIES } from '../models/MaterialOption.js';
 import DailyReport from '../models/DailyReport.js';
 
-/** يُرجع نفس شكل getMaterials() بالفرونت بالضبط: { rawTypes:[], fineness:[], packagingProduction:[], packagingLoading:[] } */
+/** يُرجع {fineness:[], packagingLoading:[], vehicleTypes:[]} — فقط الفئات الحالية.
+ *
+ * ⚠️ إصلاح باج حرج: كانت هذه الدالة تجلب كل مستندات MaterialOption بلا استثناء (بما فيها أي
+ * مستندات قديمة بفئات أُلغيت زمان مثل rawTypes/packagingProduction، ولا تزال موجودة فعليًا في
+ * قاعدة الإنتاج لأنها لم تُحذف عند إلغاء الفئتين، كما هو موثّق أعلاه)، ثم تحاول تجميعها في كائن
+ * مبني من MATERIAL_CATEGORIES الحالية فقط — فكانت ترمي خطأ فوري (Cannot read properties of
+ * undefined) بمجرد وجود مستند واحد بفئة قديمة، لأن المفتاح المقابل لها لم يعد موجودًا في
+ * الكائن. وبما أن هذه الدالة تُستدعى أيضًا من dailyReportService عند إنشاء/تعديل أي تقرير
+ * يومي (للتحقق من صحة القيم)، كان هذا يعني فشل حفظ أي تقرير يومي بالكامل، وليس فقط صفحة
+ * الخامات — الآن نفلتر على مستوى الاستعلام نفسه فلا نجلب أصلًا إلا الفئات الحالية المعروفة. */
 export async function getMaterials() {
-  const options = await MaterialOption.find({ isActive: true }).sort({ value: 1 });
+  const options = await MaterialOption.find({ isActive: true, category: { $in: MATERIAL_CATEGORIES } }).sort({ value: 1 });
   const grouped = Object.fromEntries(MATERIAL_CATEGORIES.map((c) => [c, []]));
   for (const opt of options) {
     grouped[opt.category].push(opt.value);
