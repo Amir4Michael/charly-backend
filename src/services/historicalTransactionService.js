@@ -197,6 +197,14 @@ export async function getNetTotalsForEntities(entityType, entityIds) {
     },
   ]);
   const map = {};
-  rows.forEach((r) => { map[r._id.toString()] = { grossTotal: r.grossTotal, paidTotal: r.paidTotal }; });
+  rows.forEach((r) => {
+    // نفس التقريب المُطبَّق في getEntityNet (لكيان واحد) — بدونه كان ممكن يظهر فرق كسور
+    // فلس بسيط بين رقم صفحة الحسابات العامة (تستخدم هذه الدالة المجمّعة) ورقم صفحة تفاصيل
+    // نفس العميل/القلاب/العامل (تستخدم getEntityNet)، بسبب أخطاء تقريب الفاصلة العائمة العادية.
+    map[r._id.toString()] = {
+      grossTotal: Math.round((r.grossTotal || 0) * 100) / 100,
+      paidTotal: Math.round((r.paidTotal || 0) * 100) / 100,
+    };
+  });
   return map;
 }

@@ -1,5 +1,5 @@
 import asyncHandler from 'express-async-handler';
-import { sendSuccess } from '../utils/apiResponse.js';
+import { sendSuccess, sendError } from '../utils/apiResponse.js';
 import { REFRESH_COOKIE_NAME, parseDurationToMs } from '../utils/tokens.js';
 import * as authService from '../services/authService.js';
 import User from '../models/User.js';
@@ -43,6 +43,12 @@ export const logoutController = asyncHandler(async (req, res) => {
 /** GET /api/auth/me — يحتاج protect فقط */
 export const meController = asyncHandler(async (req, res) => {
   const user = await User.findById(req.user.id);
+  // نفس فحص "المستخدم موجود ونشط" المطبَّق في authService (login/refresh/changePassword) —
+  // بدونه، توكن صالح شكليًا لمستخدم اتحذف أو اتوقف بعد إصداره كان سيسبب خطأ خادم عام (500)
+  // غامض بدل رسالة واضحة تطلب تسجيل الدخول تاني.
+  if (!user || !user.active) {
+    return sendError(res, { status: 401, message: 'المستخدم غير موجود أو تم إيقافه' });
+  }
   sendSuccess(res, { data: { id: user._id, name: user.name, username: user.username, role: user.role, phone: user.phone } });
 });
 

@@ -10,6 +10,7 @@ export const WORKER_JOBS = ['مدير', 'مشغل', 'ميكانيكي', 'كهر�
 
 const workerSchema = new mongoose.Schema(
   {
+    // name فريد عبر unique:true على الحقل نفسه (كافٍ وحده).
     name: { type: String, required: true, trim: true, unique: true },
     job: { type: String, enum: [...WORKER_JOBS, ''], default: '' },
     phone: { type: String, trim: true, default: '' },
@@ -18,7 +19,5 @@ const workerSchema = new mongoose.Schema(
   },
   withIdTransform({ timestamps: true }),
 );
-
-workerSchema.index({ name: 1 }, { unique: true, name: 'worker_name_unique' });
 
 export default mongoose.model('Worker', workerSchema);

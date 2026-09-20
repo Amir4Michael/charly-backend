@@ -55,10 +55,15 @@ function buildLedger(reportEntries, historicalEntries) {
   ].sort((a, b) => (a.date < b.date ? -1 : a.date > b.date ? 1 : 0));
 
   let balance = 0;
-  return ledger.map((entry) => {
+  const withBalance = ledger.map((entry) => {
     balance += entry.delta;
     return { ...entry, balance };
   });
+  // الرصيد المتحرك (balance) لازم يُحسب بالترتيب التصاعدي (الأقدم أولًا) عشان يبقى له معنى،
+  // لكن الجدول المعروض للمستخدم (الأحدث أولًا) لازم يطابق ترتيب جدول العمليات فوقه في نفس
+  // الصفحة (sales/trips/workDays، مُرتَّب تنازليًا) — وإلا كان جدولين في نفس الصفحة بترتيبين
+  // متعاكسين، وهو ما كان يحصل فعليًا قبل هذا الإصلاح.
+  return withBalance.reverse();
 }
 
 /** كشف حساب عميل — مطابق computeCustomerStats + معاملات قديمة (delta موجب = العميل مدين أكثر للمصنع) */
@@ -92,7 +97,10 @@ export async function getCustomerStatement(customerId, { from, to } = {}) {
     .filter((l) => l.payment === 'نقدي')
     .reduce((s, l) => s + (Number(l.weight) || 0) * (Number(l.price) || 0), 0);
   const creditPaid = sales.filter((l) => l.payment === 'آجل').reduce((s, l) => s + (Number(l.paid) || 0), 0);
-  const totalRemaining = sales.filter((l) => l.payment === 'آجل').reduce((s, l) => s + (Number(l.remaining) || 0), 0);
+  // ملاحظة مهمة: "المتبقي" الفعلي بالأسفل (totalRemaining في الـreturn) يُحسب كـ"إجمالي المبيعات
+  // - إجمالي المدفوعات" (طرح على المستوى الكلي)، وليس مجموع remaining كل عملية بيع منفردة —
+  // لو حسبناه بجمع remaining كل عملية (كل واحدة مُقيَّدة بحد أدنى صفر وقت الحفظ)، أي دفعة زيادة
+  // عن المستحق في عملية معيّنة كانت ستُفقد بدل ما تُخصم من المتبقي على عمليات أخرى لنفس العميل.
 
   const { items: historical, grossTotal, paidTotal } = await historicalTransactionService.getEntityNet('customer', customerId);
 
@@ -211,7 +219,10 @@ export async function getTruckStatement(truckId, { from, to } = {}) {
   const totalWeight = trips.reduce((s, t) => s + (Number(t.weight) || 0), 0);
   const totalDue = trips.reduce((s, t) => s + (Number(t.total) || 0), 0);
   const totalPaid = trips.reduce((s, t) => s + (Number(t.paid) || 0), 0);
-  const totalRemaining = trips.reduce((s, t) => s + (Number(t.remaining) || 0), 0);
+  // "المتبقي" الفعلي بالأسفل يُحسب بالطرح على المستوى الكلي (totalDue - totalPaid)، وليس بجمع
+  // remaining كل رحلة منفردة — نفس السبب الموثّق في getCustomerStatement أعلاه: لو قلاب اتدفعله
+  // زيادة في رحلة معيّنة (مثلًا دفعة مقدّمة)، الطرح الكلي بيخصمها صح من المستحق على رحلات تانية،
+  // بينما جمع remaining كل رحلة (مُقيَّد بحد أدنى صفر لكل رحلة على حدة) كان سيُفقد هذا الخصم.
 
   // 'له' كانت تزيد المستحق للقلاب — الآن كل عملية للقلاب دائمًا بهذا الاتجاه (راجع الموديل)،
   // فلم يعد هناك حاجة لفرع على direction: delta لكل عملية = amount - paidTotal مباشرة (نفس

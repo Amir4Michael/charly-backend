@@ -39,6 +39,11 @@ const workerEntrySchema = new mongoose.Schema(
 
 const shiftTeamSchema = new mongoose.Schema(
   {
+    // shiftLabel: أي وردية (من SHIFTS) هذا الفريق تحديدًا — كانت مفقودة من الـSchema قبل
+    // ذلك (رغم إرسال الفرونت لها)، فكانت تُحذف بصمت عند الحفظ، وعند فتح التقرير للتعديل
+    // كان الفرونت يرجع لتخمين الوردية حسب ترتيب الفريق بدل القيمة الحقيقية المحفوظة —
+    // وهذا يُصحّح المشكلة تمامًا.
+    shiftLabel: { type: String, enum: [...SHIFTS, ''], default: '' },
     operator: { type: String, trim: true, default: '' },
     workersCount: { type: Number, default: 0, min: 0 },
     workers: { type: [workerEntrySchema], default: [] },
@@ -145,7 +150,9 @@ dailyReportSchema.index({ date: -1 }, { name: 'date_desc' });
 dailyReportSchema.index({ 'materials.quarryId': 1 }, { name: 'materials_quarry_idx' });
 dailyReportSchema.index({ 'materials.truckId': 1 }, { name: 'materials_truck_idx' });
 dailyReportSchema.index({ 'loading.customerId': 1 }, { name: 'loading_customer_idx' });
-dailyReportSchema.index({ 'shiftTeams.workers.workerId': 1 }, { name: 'shiftteam_worker_idx' });
-dailyReportSchema.index({ 'workers.workerId': 1 }, { name: 'flat_worker_idx' }); // الحقل المجمّع الفعلي المستخدم في الإحصائيات (computeWorkerStats بالفرونت)
+// ملاحظة: لا يوجد فهرس على 'shiftTeams.workers.workerId' لأنه غير مُستخدَم في أي استعلام
+// حاليًا — كل حسابات/كشوف حساب العمال (accountsService و statementService) تعتمد حصريًا على
+// الحقل المُسطَّح (Flattened) 'workers.workerId' أدناه، وليس المسار المتداخل داخل shiftTeams.
+dailyReportSchema.index({ 'workers.workerId': 1 }, { name: 'flat_worker_idx' }); // الحقل الفعلي المستخدم في getWorkerBalances/getWorkerStatement
 
 export default mongoose.model('DailyReport', dailyReportSchema);

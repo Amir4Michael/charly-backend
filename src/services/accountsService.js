@@ -31,7 +31,11 @@ async function getCustomerBalances() {
           },
         },
         creditPaid: { $sum: { $cond: [{ $eq: ['$loading.payment', 'آجل'] }, { $ifNull: ['$loading.paid', 0] }, 0] } },
-        totalRemaining: { $sum: { $cond: [{ $eq: ['$loading.payment', 'آجل'] }, { $ifNull: ['$loading.remaining', 0] }, 0] } },
+        // ملاحظة: عمدًا لا نجمع هنا remaining كل عملية بيع منفردة (كانت هذه قيمة $sum إضافية
+        // هنا سابقًا) — المتبقي الفعلي لكل عميل يُحسب أدناه بطرح إجمالي المبيعات من إجمالي
+        // المدفوعات على مستوى العميل ككل (customerRows)، وليس بجمع قيم مُقيَّدة بصفر لكل عملية
+        // بيع على حدة. الفرق مهم: دفعة زيادة عن المستحق على عملية معيّنة يجب أن تُخصم من
+        // المتبقي على عمليات أخرى لنفس العميل، وهذا لا يحدث لو جُمعت القيم المُقيَّدة مسبقًا.
       },
     },
   ]);
@@ -65,8 +69,9 @@ async function getTruckBalances() {
         totalWeight: { $sum: { $ifNull: ['$materials.weight', 0] } },
         totalDue: { $sum: { $ifNull: ['$materials.transportTotal', 0] } },
         totalPaid: { $sum: { $ifNull: ['$materials.paid', 0] } },
-        totalRemaining: { $sum: { $ifNull: ['$materials.remaining', 0] } },
         tripsCount: { $sum: 1 },
+        // (نفس ملاحظة getCustomerBalances أعلاه) — لا نجمع remaining كل رحلة منفردة هنا؛
+        // المتبقي الفعلي لكل قلاب يُحسب لاحقًا بالطرح الكلي (totalDue - totalPaid) في truckRows.
       },
     },
   ]);
@@ -155,7 +160,7 @@ export async function getAccountsOverview() {
   let customerHistoricalSalesTotal = 0;
   const customerRows = Array.from(allCustomerIds)
     .map((customerId) => {
-      const b = balanceByCustomerId[customerId] || { totalSales: 0, cashSales: 0, creditPaid: 0, totalRemaining: 0 };
+      const b = balanceByCustomerId[customerId] || { totalSales: 0, cashSales: 0, creditPaid: 0 };
       const hist = customerHistoricalTotals[customerId] || { grossTotal: 0, paidTotal: 0 };
       customerHistoricalSalesTotal += hist.grossTotal;
       const due = b.totalSales + hist.grossTotal;

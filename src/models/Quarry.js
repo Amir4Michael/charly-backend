@@ -1,7 +1,8 @@
 import mongoose from 'mongoose';
 import { withIdTransform } from '../utils/mongooseIdPlugin.js';
 
-/** Quarry (الكسارة) — مطابق لـquarriesService.js في الفرونت بالضبط */
+/** Quarry (الكسارة) — مطابق لـquarriesService.js في الفرونت بالضبط.
+ * name فريد عبر unique:true على الحقل نفسه (كافٍ وحده). */
 const quarrySchema = new mongoose.Schema(
   {
     name: { type: String, required: true, trim: true, unique: true },
@@ -12,7 +13,5 @@ const quarrySchema = new mongoose.Schema(
   },
   withIdTransform({ timestamps: true }),
 );
-
-quarrySchema.index({ name: 1 }, { unique: true, name: 'quarry_name_unique' });
 
 export default mongoose.model('Quarry', quarrySchema);

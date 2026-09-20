@@ -4,6 +4,7 @@ import { validate } from '../middleware/validate.js';
 import { createCustomerValidator, updateCustomerValidator, idParamValidator } from '../validators/customerValidators.js';
 import {
   entityIdParamValidator, txIdParamValidator, createHistoricalTransactionValidator, updateHistoricalTransactionValidator,
+  addPaymentValidator, paymentIdParamValidator,
 } from '../validators/historicalTransactionValidators.js';
 import controller from '../controllers/customerController.js';
 import { createHistoricalTransactionController } from '../controllers/historicalTransactionController.js';
@@ -27,7 +28,7 @@ router.put('/:id/historical-transactions/:txId', authorize('admin'), updateHisto
 router.delete('/:id/historical-transactions/:txId', authorize('admin'), txIdParamValidator, validate, historical.remove);
 
 // ——— الدفعات على المعاملات القديمة ———
-router.post('/:id/historical-transactions/:txId/payments', authorize('admin'), historical.addPayment);
-router.delete('/:id/historical-transactions/:txId/payments/:paymentId', authorize('admin'), historical.removePayment);
+router.post('/:id/historical-transactions/:txId/payments', authorize('admin'), addPaymentValidator, validate, historical.addPayment);
+router.delete('/:id/historical-transactions/:txId/payments/:paymentId', authorize('admin'), paymentIdParamValidator, validate, historical.removePayment);
 
 export default router;

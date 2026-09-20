@@ -1,7 +1,8 @@
 import mongoose from 'mongoose';
 import { withIdTransform } from '../utils/mongooseIdPlugin.js';
 
-/** Truck (القلاب) — مطابق لـtrucksService.js في الفرونت بالضبط */
+/** Truck (القلاب) — مطابق لـtrucksService.js في الفرونت بالضبط.
+ * name فريد عبر unique:true على الحقل نفسه (كافٍ وحده). */
 const truckSchema = new mongoose.Schema(
   {
     name: { type: String, required: true, trim: true, unique: true },
@@ -12,7 +13,5 @@ const truckSchema = new mongoose.Schema(
   },
   withIdTransform({ timestamps: true }),
 );
-
-truckSchema.index({ name: 1 }, { unique: true, name: 'truck_name_unique' });
 
 export default mongoose.model('Truck', truckSchema);
