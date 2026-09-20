@@ -4,8 +4,10 @@ import Customer from '../models/Customer.js';
 import Quarry from '../models/Quarry.js';
 import Truck from '../models/Truck.js';
 import Worker from '../models/Worker.js';
+import Supplier from '../models/Supplier.js';
 import * as historicalTransactionService from './historicalTransactionService.js';
 import { getGeneralSalesTotal } from './generalSaleService.js';
+import { getCashAdjustmentsTotal } from './cashAdjustmentService.js';
 
 /**
  * كل هذه الدوال تجمع أرصدة كل الكيانات دفعة واحدة (Single-pass $group)
@@ -115,7 +117,7 @@ async function getReportTotals() {
 
 /** يطابق منطق AccountsPage.jsx بالفرونت بالكامل: المبيعات، المصاريف، والمستحقات لكل جهة */
 export async function getAccountsOverview() {
-  const [customerBalances, quarryBalances, truckBalances, workerBalances, { totalSales: reportsTotalSales, embeddedExpenses }, standaloneExpensesAgg, generalSalesTotal] =
+  const [customerBalances, quarryBalances, truckBalances, workerBalances, { totalSales: reportsTotalSales, embeddedExpenses }, standaloneExpensesAgg, generalSalesTotal, cashAdjustmentsTotal] =
     await Promise.all([
       getCustomerBalances(),
       getQuarryBalances(),
@@ -124,16 +126,18 @@ export async function getAccountsOverview() {
       getReportTotals(),
       Expense.aggregate([{ $group: { _id: null, total: { $sum: '$amount' } } }]),
       getGeneralSalesTotal(),
+      getCashAdjustmentsTotal(),
     ]);
 
   const standaloneExpenses = standaloneExpensesAgg[0]?.total || 0;
   const totalExpenses = embeddedExpenses + standaloneExpenses;
 
-  const [customers, quarries, trucks, workers] = await Promise.all([
+  const [customers, quarries, trucks, workers, suppliers] = await Promise.all([
     Customer.find().select('name'),
     Quarry.find().select('name'),
     Truck.find().select('name'),
     Worker.find().select('name'),
+    Supplier.find().select('name type'),
   ]);
 
   const nameById = (list) => Object.fromEntries(list.map((doc) => [doc._id.toString(), doc.name]));
@@ -141,14 +145,17 @@ export async function getAccountsOverview() {
   const quarryNames = nameById(quarries);
   const truckNames = nameById(trucks);
   const workerNames = nameById(workers);
+  const supplierNames = nameById(suppliers);
 
   // معاملات العملاء القديمة (بما فيها عمليات "الكمية والسعر") تدخل في إجمالي مبيعات/مدفوعات
   // كل عميل — نفس القاعدة المطبّقة في statementService.getCustomerStatement بالضبط (قسم 13)،
   // لضمان ألا تعرض صفحة الحسابات رقمًا مختلفًا عن صفحة تفاصيل العميل لنفس البيانات.
-  const [customerHistoricalTotals, truckHistoricalTotals, workerHistoricalTotals] = await Promise.all([
+  const [customerHistoricalTotals, truckHistoricalTotals, workerHistoricalTotals, supplierHistoricalTotals, quarryHistoricalTotals] = await Promise.all([
     historicalTransactionService.getNetTotalsForEntities('customer', customers.map((c) => c._id)),
     historicalTransactionService.getNetTotalsForEntities('truck', trucks.map((t) => t._id)),
     historicalTransactionService.getNetTotalsForEntities('worker', workers.map((w) => w._id)),
+    historicalTransactionService.getNetTotalsForEntities('supplier', suppliers.map((s) => s._id)),
+    historicalTransactionService.getNetTotalsForEntities('quarry', quarries.map((q) => q._id)),
   ]);
 
   const balanceByCustomerId = Object.fromEntries(customerBalances.map((b) => [b._id.toString(), b]));
@@ -179,9 +186,21 @@ export async function getAccountsOverview() {
   // والسعر" الخاصة بالعملاء + المبيعات العامة غير المرتبطة بأي عميل (قسم 2 و11 من الطلب).
   const totalSales = reportsTotalSales + customerHistoricalSalesTotal + generalSalesTotal;
 
+  // due هنا = الوزن بالطن (زي ما كان دائمًا؛ صفحة الحسابات بتعرضه كـ"طن") — لا نخلطه بالمالي.
+  // financialDue/financialPaid/financialRemaining حقول جديدة منفصلة تمامًا، من العمليات القديمة
+  // فقط (لا يوجد مصدر مالي آخر للكسارة في التقرير اليومي نفسه) — كانت غائبة تمامًا عن هذه
+  // الصفحة وعن حساب "صندوق المصنع" قبل هذا الإصلاح، رغم إن كشف حساب الكسارة نفسه (صفحة
+  // التفاصيل) كان بالفعل يدعم عمليات قديمة مالية للكسارة.
   const quarryRows = quarryBalances
-    .map((b) => ({ id: b._id, name: quarryNames[b._id.toString()] || 'غير معروف', due: b.totalWeight, count: b.deliveriesCount || 0 }))
-    .filter((r) => r.due > 0);
+    .map((b) => {
+      const quarryId = b._id.toString();
+      const hist = quarryHistoricalTotals[quarryId] || { grossTotal: 0, paidTotal: 0 };
+      return {
+        id: b._id, name: quarryNames[quarryId] || 'غير معروف', due: b.totalWeight, count: b.deliveriesCount || 0,
+        financialDue: hist.grossTotal, financialPaid: hist.paidTotal, financialRemaining: hist.grossTotal - hist.paidTotal,
+      };
+    })
+    .filter((r) => r.due > 0 || r.financialDue > 0 || r.financialRemaining > 0);
 
   const balanceByTruckId = Object.fromEntries(truckBalances.map((b) => [b._id.toString(), b]));
   const allTruckIds = new Set([
@@ -221,21 +240,57 @@ export async function getAccountsOverview() {
     })
     .filter((r) => r.due > 0 || r.remaining > 0);
 
+  // موردو مواد التعبئة (شكاير/بالتات خشب/جامبو) — غير مرتبطين بالتقرير اليومي إطلاقًا (قرار
+  // مقصود)، فكل رصيدهم يأتي من العمليات القديمة/اليدوية (HistoricalTransaction) فقط. كانوا
+  // غائبين تمامًا عن هذه الصفحة قبل هذا الإصلاح — أي مبلغ مستحق لمورد لم يكن يظهر هنا خالص.
+  const supplierRows = suppliers
+    .map((s) => {
+      const hist = supplierHistoricalTotals[s._id.toString()] || { grossTotal: 0, paidTotal: 0 };
+      return {
+        id: s._id.toString(), name: supplierNames[s._id.toString()] || 'غير معروف', type: s.type,
+        due: hist.grossTotal, paid: hist.paidTotal, remaining: hist.grossTotal - hist.paidTotal,
+      };
+    })
+    .filter((r) => r.due > 0 || r.remaining > 0);
+
   const receivable = customerRows.reduce((s, r) => s + r.remaining, 0);
   const payableTrucks = truckRows.reduce((s, r) => s + r.remaining, 0);
   const payableWorkers = workerRows.reduce((s, r) => s + r.remaining, 0);
+  const payableSuppliers = supplierRows.reduce((s, r) => s + r.remaining, 0);
+  const payableQuarries = quarryRows.reduce((s, r) => s + r.financialRemaining, 0);
+
+  // ——— صندوق المصنع (الرصيد النقدي الفعلي) ———
+  // مختلف جوهريًا عن "الصافي" (net) أدناه: الصافي = كل المبيعات (بما فيها آجل لسه ما
+  // اتحصّلش) ناقص كل المصاريف — رقم رِبحية محاسبي، مش رصيد نقدي فعلي. صندوق المصنع هنا هو
+  // "الفلوس اللي فعليًا دخلت إيد المصنع وخرجت منها حتى الآن": بيجمع بس اللي اتحصّل فعليًا من
+  // العملاء (paid، مش due) والمبيعات العامة (نقدية دايمًا) وأي تعديل يدوي (رصيد افتتاحي أو
+  // إيداع/سحب من صاحب المصنع، cashAdjustmentsTotal — موجب أو سالب)، ويطرح منه بس اللي
+  // اتصرف/اتدفع فعليًا (مصاريف + paid فعليًا للقلابات والعمال والموردين والكسارات) — بغض
+  // النظر عن أي مبلغ لسه مستحق (سواء له أو عليه) ولسه ما اتحصّلش/ما اتدفعش.
+  const totalCollectedFromCustomers = customerRows.reduce((s, r) => s + r.paid, 0);
+  const totalPaidToTrucks = truckRows.reduce((s, r) => s + r.paid, 0);
+  const totalPaidToWorkers = workerRows.reduce((s, r) => s + r.paid, 0);
+  const totalPaidToSuppliers = supplierRows.reduce((s, r) => s + r.paid, 0);
+  const totalPaidToQuarries = quarryRows.reduce((s, r) => s + r.financialPaid, 0);
+  const cashBox = totalCollectedFromCustomers + generalSalesTotal + cashAdjustmentsTotal - totalExpenses
+    - totalPaidToTrucks - totalPaidToWorkers - totalPaidToSuppliers - totalPaidToQuarries;
 
   return {
     totalSales,
     generalSalesTotal,
     totalExpenses,
     net: totalSales - totalExpenses,
+    cashBox,
+    cashAdjustmentsTotal,
     receivable,
     payableTrucks,
     payableWorkers,
+    payableSuppliers,
+    payableQuarries,
     customerRows,
     quarryRows,
     truckRows,
     workerRows,
+    supplierRows,
   };
 }

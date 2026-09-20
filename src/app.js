@@ -23,6 +23,7 @@ import accountsRoutes from './routes/accountsRoutes.js';
 import weeklyScheduleRoutes from './routes/weeklyScheduleRoutes.js';
 import supplierRoutes from './routes/supplierRoutes.js';
 import generalSaleRoutes from './routes/generalSaleRoutes.js';
+import cashAdjustmentRoutes from './routes/cashAdjustmentRoutes.js';
 
 const app = express();
 
@@ -62,6 +63,7 @@ app.use('/api/accounts', accountsRoutes);
 app.use('/api/schedules/weekly', weeklyScheduleRoutes);
 app.use('/api/suppliers', supplierRoutes);
 app.use('/api/general-sales', generalSaleRoutes);
+app.use('/api/cash-adjustments', cashAdjustmentRoutes);
 // كل الموديولات المخطط لها في Backend Blueprint (قسم 1) اكتملت الآن.
 // المتبقي: ربط الفرونت تدريجيًا بالـAPI الحقيقي (المرحلة 9).
 

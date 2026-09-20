@@ -3,45 +3,32 @@ import quarryService from './quarryService.js';
 import truckService from './truckService.js';
 import workerService from './workerService.js';
 import customerService from './customerService.js';
-import { getMaterials } from './materialOptionService.js';
+import { addOption } from './materialOptionService.js';
 import { ApiError } from '../utils/apiResponse.js';
 
 /**
- * يتحقق أن كل القيم الديناميكية (درجة النعومة، نوع العبوة، نوع السيارة) موجودة فعليًا
- * ضمن قوائم MaterialOption الحالية — تمامًا كما يعرضها الفرونت في القوائم المنسدلة،
- * بدلاً من enum ثابت كان سيرفض أي قيمة جديدة يضيفها المستخدم عبر صفحة الخامات.
- * لا يرفض القيمة الفارغة (الحقل اختياري في أغلب الأحيان)، فقط يرفض قيمة غير فارغة وغير معروفة.
+ * يسجّل تلقائيًا أي قيمة جديدة لدرجة النعومة/نوع العبوة/نوع السيارة تظهر في هذا التقرير
+ * ضمن قوائم MaterialOption — بدل ما يرفض الحفظ برسالة "القيم غير موجودة ضمن القوائم الحالية".
  *
- * ملاحظة بعد إعادة الهيكلة: لم يعد هناك تحقق على "نوع الخامة" (raw.type حُذف بالكامل من
- * التقرير) ولا على حقول production (القسم حُذف بالكامل) — بقي فقط تحقق حقول loading.
+ * ⚠️ إصلاح: كان في السابق تحقق (checkDynamicEnums/validateDynamicEnums) بيرفض حفظ أي تقرير
+ * فيه قيمة درجة نعومة لم تُضَف مسبقًا يدويًا من صفحة الخامات — بينما حقل درجة النعومة نفسه في
+ * فورم التقرير اليومي (SearchSelect) بيسمح للمستخدم يكتب قيمة جديدة بحرية تمامًا، فكان
+ * الفورم "يقبل" الكتابة شكليًا ثم يرفضها وقت الحفظ برسالة مش واضحة السبب. الحل الصحيح هو نفس
+ * فلسفة الكسارة/القلاب/العميل/العامل (findOrCreateByName أدناه): القيمة تتسجل تلقائيًا في
+ * مكانها بمجرد استخدامها، بدل ما يُطلب من المستخدم يروح صفحة تانية يضيفها الأول.
  */
-/**
- * الجزء النقي (Pure) من التحقق — يستقبل قوائم المواد جاهزة بدل استعلام DB مباشرة،
- * فيسهل اختباره بمعزل، ويظل reused من الدالة التي تجلب القوائم فعليًا من MaterialOption.
- */
-export function checkDynamicEnums(payload, materials) {
-  const errors = [];
-
-  const checkValue = (value, list, fieldLabel) => {
-    if (value && !list.includes(value)) {
-      errors.push(`${fieldLabel}: "${value}" غير موجود ضمن القوائم الحالية`);
+async function autoRegisterMaterialValues(payload) {
+  const categoryByField = { fineness: 'fineness', packaging: 'packagingLoading', vehicleType: 'vehicleTypes' };
+  const registered = new Set(); // لتفادي نداءات مكررة لنفس القيمة داخل نفس عملية الحفظ
+  for (const l of payload.loading || []) {
+    for (const [field, category] of Object.entries(categoryByField)) {
+      const trimmed = l[field]?.trim ? l[field].trim() : '';
+      if (!trimmed) continue;
+      const key = `${category}:${trimmed}`;
+      if (registered.has(key)) continue;
+      registered.add(key);
+      await addOption(category, trimmed);
     }
-  };
-
-  (payload.loading || []).forEach((l, i) => {
-    checkValue(l.fineness, materials.fineness, `درجة نعومة التحميل #${i + 1}`);
-    checkValue(l.packaging, materials.packagingLoading, `عبوة التحميل #${i + 1}`);
-    checkValue(l.vehicleType, materials.vehicleTypes, `نوع سيارة التحميل #${i + 1}`);
-  });
-
-  return errors;
-}
-
-async function validateDynamicEnums(payload) {
-  const materials = await getMaterials();
-  const errors = checkDynamicEnums(payload, materials);
-  if (errors.length) {
-    throw new ApiError(400, 'بعض القيم غير موجودة ضمن قوائم الخامات الحالية', errors);
   }
 }
 
@@ -53,6 +40,18 @@ async function validateDynamicEnums(payload) {
  */
 async function prepareReportPayload(input) {
   const payload = { ...input };
+
+  // ——— مديرو المصنع: أسماء نصية فقط في الموديل (بلا ID)، لكن لازم يتسجّلوا في صفحة العمال
+  // تلقائيًا زي باقي الأسماء (كسارة/قلاب/عميل/عامل) — كانت هذه الخطوة مفقودة تمامًا فعليًا،
+  // فكتابة اسم مدير جديد هنا لم تكن تُنشئ له سجل عامل بوظيفة "مدير" في صفحة العمال إطلاقًا.
+  payload.managers = await Promise.all(
+    (payload.managers || [])
+      .filter((name) => name?.trim())
+      .map(async (name) => {
+        await workerService.findOrCreateByName(name, { job: 'مدير' });
+        return name.trim();
+      }),
+  );
 
   // ——— الخامة: صفوف متعددة، كل صف = كسارة + قلاب + وزن + سعرين منفصلين ———
   // مصدرين ماليين منفصلين تمامًا لكل صف:
@@ -96,6 +95,11 @@ async function prepareReportPayload(input) {
   // ——— فرق التشغيل (مشغل + عمال) لكل وردية ———
   const shiftTeams = await Promise.all(
     (payload.shiftTeams || []).map(async (team) => {
+      // اسم المشغل نفسه (وليس فقط العمال تحته) لازم يتسجّل في صفحة العمال بوظيفة "مشغل" —
+      // نفس الإصلاح المطبَّق على المديرين أعلاه، وكانت نفس المشكلة بالظبط.
+      if (team.operator?.trim()) {
+        await workerService.findOrCreateByName(team.operator, { job: 'مشغل' });
+      }
       const workers = await Promise.all(
         (team.workers || [])
           .filter((w) => w.name?.trim())
@@ -161,13 +165,13 @@ export async function getReportById(id) {
 }
 
 export async function createReport(input, userId) {
-  await validateDynamicEnums(input);
+  await autoRegisterMaterialValues(input);
   const payload = await prepareReportPayload(input);
   return DailyReport.create({ ...payload, createdBy: userId, updatedBy: userId });
 }
 
 export async function updateReport(id, input, userId) {
-  await validateDynamicEnums(input);
+  await autoRegisterMaterialValues(input);
   const payload = await prepareReportPayload(input);
   const report = await DailyReport.findByIdAndUpdate(
     id,
