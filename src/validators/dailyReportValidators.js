@@ -16,6 +16,7 @@ export const createReportValidator = [
     .withMessage('سعر الخامة يجب أن يكون رقمًا موجبًا'),
   body('materials.*.truckRate').optional().isFloat({ min: 0 }).withMessage('سعر النقلة يجب أن يكون رقمًا موجبًا'),
   body('materials.*.paid').optional().isFloat({ min: 0 }).withMessage('المدفوع للقلاب يجب أن يكون رقمًا موجبًا'),
+  body('materials.*.materialPaid').optional().isFloat({ min: 0 }).withMessage('المدفوع لثمن الخامة يجب أن يكون رقمًا موجبًا'),
 
   body('shiftTeams').optional().isArray(),
   body('shiftTeams.*.workers').optional().isArray(),

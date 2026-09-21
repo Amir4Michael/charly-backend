@@ -46,6 +46,8 @@ async function getCustomerBalances() {
 async function getQuarryBalances() {
   // بعد الانتقال من raw{} (كسارة واحدة لليوم) إلى materials[] (عدة صفوف/كسارات في نفس اليوم)،
   // لازم $unwind قبل التجميع — كسارة واحدة ممكن تتكرر في أكتر من صف بنفس التقرير.
+  // materialDue/materialPaid: مستحق الكسارة الفعلي من قيمة الخامة نفسها (وليس الوزن فقط) —
+  // منفصلان تمامًا عن حسابات نقل القلاب (getTruckBalances أدناه)، بنفس مبدأ transportTotal.
   return DailyReport.aggregate([
     { $unwind: '$materials' },
     { $match: { 'materials.quarryId': { $ne: null } } },
@@ -54,6 +56,8 @@ async function getQuarryBalances() {
         _id: '$materials.quarryId',
         totalWeight: { $sum: { $ifNull: ['$materials.weight', 0] } },
         deliveriesCount: { $sum: 1 },
+        materialDue: { $sum: { $ifNull: ['$materials.materialTotal', 0] } },
+        materialPaid: { $sum: { $ifNull: ['$materials.materialPaid', 0] } },
       },
     },
   ]);
@@ -191,13 +195,18 @@ export async function getAccountsOverview() {
   // فقط (لا يوجد مصدر مالي آخر للكسارة في التقرير اليومي نفسه) — كانت غائبة تمامًا عن هذه
   // الصفحة وعن حساب "صندوق المصنع" قبل هذا الإصلاح، رغم إن كشف حساب الكسارة نفسه (صفحة
   // التفاصيل) كان بالفعل يدعم عمليات قديمة مالية للكسارة.
+  // "المستحق المالي" للكسارة دلوقتي مصدرين يُجمعان: قيمة الخامة نفسها من التقارير اليومية
+  // (materialDue/materialPaid — الإصلاح الجديد) + أي عمليات قديمة مسجّلة يدويًا (hist).
+  // financialDue/financialPaid/financialRemaining = المجموع الكلي من المصدرين معًا.
   const quarryRows = quarryBalances
     .map((b) => {
       const quarryId = b._id.toString();
       const hist = quarryHistoricalTotals[quarryId] || { grossTotal: 0, paidTotal: 0 };
+      const financialDue = (b.materialDue || 0) + hist.grossTotal;
+      const financialPaid = (b.materialPaid || 0) + hist.paidTotal;
       return {
         id: b._id, name: quarryNames[quarryId] || 'غير معروف', due: b.totalWeight, count: b.deliveriesCount || 0,
-        financialDue: hist.grossTotal, financialPaid: hist.paidTotal, financialRemaining: hist.grossTotal - hist.paidTotal,
+        financialDue, financialPaid, financialRemaining: financialDue - financialPaid,
       };
     })
     .filter((r) => r.due > 0 || r.financialDue > 0 || r.financialRemaining > 0);
@@ -259,14 +268,26 @@ export async function getAccountsOverview() {
   const payableSuppliers = supplierRows.reduce((s, r) => s + r.remaining, 0);
   const payableQuarries = quarryRows.reduce((s, r) => s + r.financialRemaining, 0);
 
+  // ——— صافي الربح التشغيلي ———
+  // ⚠️ إصلاح: كان اسمه "الصافي" ويُحسب كـ(المبيعات − المصاريف فقط)، متجاهلًا تمامًا أكبر
+  // بنود التكلفة الفعلية (الخامة، النقل، الأجور، الموردين) — رقم مضلل كان يُظهر ربحًا أعلى
+  // بكثير من الحقيقة. الحساب الصحيح يطرح كل تكاليف التشغيل الفعلية، باستخدام "المستحق" لكل
+  // بند (وليس "المدفوع") تمامًا كما تُحسب المبيعات نفسها بالمستحق — هذا هو المبدأ المحاسبي
+  // الصحيح لحساب الربح (يُحتسب وقت استحقاق التكلفة، لا وقت دفعها فعليًا)، ومختلف عمدًا عن
+  // "صندوق المصنع" أعلاه (الذي يعتمد على المدفوع الفعلي فقط، رقم نقدية لا ربحية).
+  const totalMaterialCost = quarryRows.reduce((s, r) => s + r.financialDue, 0);
+  const totalTransportCost = truckRows.reduce((s, r) => s + r.due, 0);
+  const totalLaborCost = workerRows.reduce((s, r) => s + r.due, 0);
+  const totalSupplierCost = supplierRows.reduce((s, r) => s + r.due, 0);
+  const netOperatingProfit = totalSales - (totalMaterialCost + totalTransportCost + totalLaborCost + totalSupplierCost + totalExpenses);
+
   // ——— صندوق المصنع (الرصيد النقدي الفعلي) ———
-  // مختلف جوهريًا عن "الصافي" (net) أدناه: الصافي = كل المبيعات (بما فيها آجل لسه ما
-  // اتحصّلش) ناقص كل المصاريف — رقم رِبحية محاسبي، مش رصيد نقدي فعلي. صندوق المصنع هنا هو
-  // "الفلوس اللي فعليًا دخلت إيد المصنع وخرجت منها حتى الآن": بيجمع بس اللي اتحصّل فعليًا من
-  // العملاء (paid، مش due) والمبيعات العامة (نقدية دايمًا) وأي تعديل يدوي (رصيد افتتاحي أو
-  // إيداع/سحب من صاحب المصنع، cashAdjustmentsTotal — موجب أو سالب)، ويطرح منه بس اللي
-  // اتصرف/اتدفع فعليًا (مصاريف + paid فعليًا للقلابات والعمال والموردين والكسارات) — بغض
-  // النظر عن أي مبلغ لسه مستحق (سواء له أو عليه) ولسه ما اتحصّلش/ما اتدفعش.
+  // مختلف جوهريًا عن "صافي الربح التشغيلي" أعلاه: هذا الأخير رقم رِبحية محاسبي (بالمستحق)،
+  // بينما صندوق المصنع هنا هو "الفلوس اللي فعليًا دخلت إيد المصنع وخرجت منها حتى الآن":
+  // بيجمع بس اللي اتحصّل فعليًا من العملاء (paid، مش due) والمبيعات العامة (نقدية دايمًا)
+  // وأي تعديل يدوي (رصيد افتتاحي أو إيداع/سحب من صاحب المصنع، cashAdjustmentsTotal — موجب
+  // أو سالب)، ويطرح منه بس اللي اتصرف/اتدفع فعليًا (مصاريف + paid فعليًا للقلابات والعمال
+  // والموردين والكسارات) — بغض النظر عن أي مبلغ لسه مستحق ولسه ما اتحصّلش/ما اتدفعش.
   const totalCollectedFromCustomers = customerRows.reduce((s, r) => s + r.paid, 0);
   const totalPaidToTrucks = truckRows.reduce((s, r) => s + r.paid, 0);
   const totalPaidToWorkers = workerRows.reduce((s, r) => s + r.paid, 0);
@@ -279,7 +300,11 @@ export async function getAccountsOverview() {
     totalSales,
     generalSalesTotal,
     totalExpenses,
-    net: totalSales - totalExpenses,
+    netOperatingProfit,
+    totalMaterialCost,
+    totalTransportCost,
+    totalLaborCost,
+    totalSupplierCost,
     cashBox,
     cashAdjustmentsTotal,
     receivable,

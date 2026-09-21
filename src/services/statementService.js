@@ -152,6 +152,8 @@ export async function getQuarryStatement(quarryId, { from, to } = {}) {
         truck: '$materials.truck',
         materialUnitPrice: '$materials.materialUnitPrice',
         materialTotal: '$materials.materialTotal',
+        materialPaid: '$materials.materialPaid',
+        materialRemaining: '$materials.materialRemaining',
       },
     },
     { $sort: { date: -1 } },
@@ -165,13 +167,18 @@ export async function getQuarryStatement(quarryId, { from, to } = {}) {
     truck: r.truck,
     materialUnitPrice: r.materialUnitPrice,
     materialTotal: r.materialTotal,
+    materialPaid: r.materialPaid || 0,
+    materialRemaining: r.materialRemaining || 0,
     reportId: r.reportId,
   }));
 
   const totalWeight = deliveries.reduce((s, d) => s + (Number(d.weight) || 0), 0);
+  // مستحق الكسارة الفعلي = قيمة الخامة من التقارير اليومية (materialTotal/materialPaid لكل
+  // توريد، الإصلاح الجديد) + أي عمليات قديمة مسجّلة يدويًا — نفس مبدأ التوحيد المطبَّق في
+  // accountsService.getQuarryBalances، حتى يتطابق هذا الرقم تمامًا مع صفحة الحسابات العامة.
+  const deliveriesGrossTotal = deliveries.reduce((s, d) => s + (Number(d.materialTotal) || 0), 0);
+  const deliveriesPaidTotal = deliveries.reduce((s, d) => s + (Number(d.materialPaid) || 0), 0);
 
-  // لا يوجد مفهوم "مستحق مالي" حاليًا للكسارة في business logic الموجود (وزن فقط) —
-  // لذلك المعاملات القديمة هنا سجل مالي حقيقي مستقل (رصيده الخاص)، وليس مدمجًا مع الوزن.
   const { items: historical, grossTotal, paidTotal } = await historicalTransactionService.getEntityNet('quarry', quarryId);
   const historicalLedger = buildLedger([], historical);
 
@@ -180,6 +187,12 @@ export async function getQuarryStatement(quarryId, { from, to } = {}) {
     totalWeight,
     historical,
     historicalLedger,
+    // إجمالي مالي كامل (توريدات + عمليات قديمة معًا) — هذا هو "المستحق الفعلي" الصحيح للكسارة.
+    materialGrossTotal: deliveriesGrossTotal + grossTotal,
+    materialPaidTotal: deliveriesPaidTotal + paidTotal,
+    materialNetBalance: (deliveriesGrossTotal + grossTotal) - (deliveriesPaidTotal + paidTotal),
+    // الحقول القديمة تبقى موجودة للتوافق (عمليات قديمة فقط، بدون التوريدات) — لا يُعتمَد عليها
+    // بعد الآن لعرض "المتبقي الإجمالي"، استخدم materialNetBalance أعلاه بدلًا منها.
     historicalGrossTotal: grossTotal,
     historicalPaidTotal: paidTotal,
     historicalNetBalance: grossTotal - paidTotal,

@@ -54,18 +54,19 @@ const shiftTeamSchema = new mongoose.Schema(
 /**
  * materialEntrySchema — صف "الخامة" الواحد: نقلة كاملة من كسارة معيّنة عبر قلاب معيّن.
  * يحتوي على مصدرين ماليين منفصلين تمامًا ومُخزَّنين في حقول مستقلة، حتى لا تختلط فلوس
- * الخامة (المستحقة منطقيًا للكسارة) بفلوس النقل (المستحقة فعليًا للقلاب/السائق):
+ * الخامة (المستحقة للكسارة) بفلوس النقل (المستحقة للقلاب/السائق):
  *
- *   - materialTotal = weight × materialUnitPrice  → قيمة الخامة نفسها (عرض فقط حاليًا،
- *     لا تدخل في أي رصيد مالي للكسارة، لأن الكسارة ليس لها "مستحق مالي" في الـbusiness logic
- *     الحالي — وزن فقط، تمامًا كما كان الوضع قبل هذا الـrefactor).
+ *   - materialTotal = weight × materialUnitPrice  → قيمة الخامة نفسها (المستحق للكسارة).
+ *     materialPaid = المدفوع فعليًا (نقدًا من صندوق المصنع) من قيمة الخامة هذه تحديدًا —
+ *     حقل مستقل تمامًا عن paid/remaining (نقل القلاب أدناه). لا علاقة بينهما إطلاقًا.
+ *     materialRemaining = max(materialTotal - materialPaid, 0) → يدخل في "مستحق الكسارة"
+ *     في صفحة الحسابات، وmaterialPaid فقط هو ما يُخصَم من صندوق المصنع (وليس materialTotal
+ *     نفسه) — تسجيل قيمة الخامة وحدها بدون دفعة فعلية لا يُنقص الصندوق إطلاقًا.
  *   - transportTotal = weight × truckRate → قيمة نقلة القلاب، ومنها paid/remaining.
- *     هذا هو الحقل الوحيد الذي يُستخدم في حساب مستحقات القلاب (accountsService/statementService)
- *     — materialTotal لا يُستخدم هناك إطلاقًا، تفاديًا لأي خلط بين الجهتين.
+ *     هذا الحقل يُستخدم فقط في حساب مستحقات القلاب — منفصل تمامًا عن مستحقات الكسارة أعلاه.
  *
  * materialUnitPrice اختياري بلا default (تمامًا كما كان raw.price) — لا نفرض قيمة صفرية توهم
- * بسعر حقيقي. باقي الحقول الرقمية (weight/truckRate/paid) اختيارية بـdefault=0 تمامًا كما كانت
- * في tipperSchema القديم؛ paid تحديدًا تأكدنا أنها لم تكن Required في أي مكان بالكود القديم.
+ * بسعر حقيقي. باقي الحقول الرقمية اختيارية بـdefault=0.
  */
 const materialEntrySchema = new mongoose.Schema(
   {
@@ -77,11 +78,13 @@ const materialEntrySchema = new mongoose.Schema(
     weight: { type: Number, default: 0, min: 0 },
 
     materialUnitPrice: { type: Number, min: 0 }, // اختياري صراحةً — لا default (مطابق raw.price سابقًا)
-    materialTotal: { type: Number, default: 0, min: 0 }, // مُشتق = weight × materialUnitPrice
+    materialTotal: { type: Number, default: 0, min: 0 }, // مُشتق = weight × materialUnitPrice (المستحق للكسارة)
+    materialPaid: { type: Number, default: 0, min: 0 }, // المدفوع فعليًا من قيمة الخامة (يُخصَم من الصندوق)
+    materialRemaining: { type: Number, default: 0, min: 0 }, // مُشتق = max(materialTotal - materialPaid, 0)
 
     truckRate: { type: Number, default: 0, min: 0 },
     transportTotal: { type: Number, default: 0, min: 0 }, // مُشتق = weight × truckRate
-    paid: { type: Number, default: 0, min: 0 },
+    paid: { type: Number, default: 0, min: 0 }, // مدفوع نقل القلاب — منفصل تمامًا عن materialPaid
     remaining: { type: Number, default: 0, min: 0 }, // مُشتق = max(transportTotal - paid, 0)
   },
   { _id: false },

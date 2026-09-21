@@ -55,7 +55,8 @@ async function prepareReportPayload(input) {
 
   // ——— الخامة: صفوف متعددة، كل صف = كسارة + قلاب + وزن + سعرين منفصلين ———
   // مصدرين ماليين منفصلين تمامًا لكل صف:
-  //   materialTotal  = weight × materialUnitPrice  (قيمة الخامة — عرض فقط، لا تُستخدم في أي رصيد)
+  //   materialTotal  = weight × materialUnitPrice  (قيمة الخامة — المستحق للكسارة)
+  //   materialPaid   = المدفوع فعليًا من قيمة الخامة (يُخصَم من صندوق المصنع مباشرة)
   //   transportTotal = weight × truckRate           (قيمة نقلة القلاب — مصدر paid/remaining القلاب)
   // الصف يُحفظ فقط لو فيه كسارة أو قلاب محدد (تمامًا كما كانت tippers تُفلتر بوجود اسم).
   payload.materials = await Promise.all(
@@ -72,6 +73,9 @@ async function prepareReportPayload(input) {
         const hasPrice = m.materialUnitPrice !== undefined && m.materialUnitPrice !== null && m.materialUnitPrice !== '';
         const materialUnitPrice = hasPrice ? Number(m.materialUnitPrice) : undefined;
         const materialTotal = hasPrice ? weight * materialUnitPrice : 0;
+        // materialPaid منفصل تمامًا عن paid (نقل القلاب أدناه) — تسجيل قيمة الخامة وحدها من
+        // غير دفعة فعلية هنا لا يُنقص الصندوق إطلاقًا؛ الصندوق يتأثر فقط بما يُكتب هنا صراحةً.
+        const materialPaid = Number(m.materialPaid) || 0;
 
         const truckRate = Number(m.truckRate) || 0;
         const paid = Number(m.paid) || 0;
@@ -84,6 +88,8 @@ async function prepareReportPayload(input) {
           weight,
           materialUnitPrice,
           materialTotal,
+          materialPaid,
+          materialRemaining: Math.max(materialTotal - materialPaid, 0),
           truckRate,
           transportTotal,
           paid,
